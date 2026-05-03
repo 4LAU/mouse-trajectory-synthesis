@@ -1,0 +1,26 @@
+[project]
+name = "mouse-trajectory-synthesis"
+version = "0.1.0"
+description = "Generative modeling of human mouse trajectories: evaluation framework, corpus baseline, and research findings"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Aaron Lau"}]
+readme = "README.md"
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "scikit-learn>=1.3",
+    "torch>=2.0",
+]
+
+[project.urls]
+Repository = "https://github.com/4LAU/mouse-trajectory-synthesis"
+
+[tool.setuptools]
+py-modules = ["features", "evaluate"]
+
+[tool.setuptools.packages.find]
+include = ["models*", "experiments*", "training*"]
+
+[tool.pytest.ini_options]
+testpaths = ["."]

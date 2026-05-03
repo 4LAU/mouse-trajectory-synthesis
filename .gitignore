@@ -1,0 +1,14 @@
+*.npy
+*.npz
+*.pt
+*.db
+__pycache__/
+data/
+*.egg-info/
+.env
+.env*
+.venv/
+.pytest_cache/
+.claude/
+figures/*.png
+uv.lock
