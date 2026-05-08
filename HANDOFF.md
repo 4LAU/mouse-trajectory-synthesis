@@ -96,38 +96,67 @@ The current transformer checkpoint is severely undertrained:
 - 37% accuracy, mode collapse (420/1025 tokens used)
 - 2% stall rate (human is 6%), paths too straight
 
-### What to change
+### Step A: Figure out your time budget
 
-Two values in `training/train_transformer.py`:
+The previous run (200K data, 40 epochs) took 5.6 hours. But scaling isn't linear — more data means more batches per epoch. You need to measure first.
 
-1. **Line 172:** change `max_train = 200_000` to `max_train = 500_000`
-2. **Line 218:** change `n_epochs = 40` to `n_epochs = 100`
-
-### Run the training
+Run 1 epoch with the current settings to get a baseline:
 
 ```bash
 cd /path/to/mouse-trajectory-synthesis
 python -m training.train_transformer
 ```
 
-This will:
-- Load 500K tokenized trajectories (already tokenized in `training/`)
-- Train for 100 epochs with cosine LR decay
-- Save the best checkpoint to `training/trajectory_transformer_best.pt`
-- Print val_loss and val_acc every 5 epochs
+After epoch 1 prints, note the elapsed time. Then kill it (Ctrl+C) and do the math:
 
-Estimated time: ~6-8 hours on RTX 4070.
+```
+time_per_epoch = elapsed_seconds_after_epoch_1
+hours_available = 8  (or whatever you have)
+max_epochs = int(hours_available * 3600 / time_per_epoch)
+```
+
+Then decide how to spend your budget. The two levers are:
+
+- **More data** (`max_train` on line 172) — helps with mode collapse and distribution coverage
+- **More epochs** (`n_epochs` on line 218) — helps the model converge on what it has
+
+Priority: more data first, then more epochs with whatever time is left. The model's main problem is mode collapse (420/1025 tokens used), which is more likely a data diversity issue than a convergence issue.
+
+Example: if 1 epoch at 200K takes 8 minutes:
+- 8 hours = 60 epochs at 200K, or ~35 epochs at 350K, or ~24 epochs at 500K
+- Pick 350K/35ep or 500K/24ep over 200K/60ep
+
+### Step B: Apply the settings and run
+
+Edit `training/train_transformer.py`:
+
+1. **Line 172:** change `max_train = 200_000` to your chosen value
+2. **Line 218:** change `n_epochs = 40` to your chosen value
+
+Then run:
+
+```bash
+python -m training.train_transformer
+```
+
+The best checkpoint saves automatically to `training/trajectory_transformer_best.pt`.
 
 ### What to look for
 
-Watch the printout every 5 epochs. Good signs:
+The script prints val_loss and val_acc every 5 epochs. Good signs:
 - val_acc climbing above 40% (currently plateaus at 37%)
 - val_loss dropping below 2.5 (currently 2.527)
 - These indicate the model is learning more of the distribution
 
 ### After training completes
 
-Evaluate the new checkpoint:
+Copy the new checkpoint into the data directory so the experiment uses it:
+
+```bash
+cp training/trajectory_transformer_best.pt data/trajectory_transformer_best.pt
+```
+
+Then evaluate:
 
 ```bash
 python evaluate.py --experiment experiments.vqvae_ar_transformer -n 2000 --seeds 5
@@ -144,7 +173,11 @@ If `training/vqvae_token_seqs.npy` doesn't exist, run tokenization first:
 python -m training.tokenize_trajectories
 ```
 
-This takes ~10 minutes and only needs to run once.
+This takes ~10 minutes and only needs to run once. Requires `training/vqvae_v2_best.pt` and
+`training/train_positions.npy` from the original research — these should already be on the
+RTX 4070 laptop from the initial training runs. If they're missing, the full data pipeline
+needs to be re-run (`python -m training.prepare_training_data` then `python -m training.train_vqvae`
+then `python -m training.tokenize_trajectories`).
 
 ---
 
