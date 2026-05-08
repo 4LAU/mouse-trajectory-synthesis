@@ -86,9 +86,71 @@ gh repo edit 4LAU/mouse-trajectory-synthesis --visibility public --accept-visibi
 
 ---
 
+---
+
+## Overnight Task: Retrain the Transformer (~8 hours on RTX 4070)
+
+The current transformer checkpoint is severely undertrained:
+- Trained on 200K of 4.16M available trajectories
+- Only 40 epochs (5.6 hours)
+- 37% accuracy, mode collapse (420/1025 tokens used)
+- 2% stall rate (human is 6%), paths too straight
+
+### What to change
+
+Two values in `training/train_transformer.py`:
+
+1. **Line 172:** change `max_train = 200_000` to `max_train = 500_000`
+2. **Line 218:** change `n_epochs = 40` to `n_epochs = 100`
+
+### Run the training
+
+```bash
+cd /path/to/mouse-trajectory-synthesis
+python -m training.train_transformer
+```
+
+This will:
+- Load 500K tokenized trajectories (already tokenized in `training/`)
+- Train for 100 epochs with cosine LR decay
+- Save the best checkpoint to `training/trajectory_transformer_best.pt`
+- Print val_loss and val_acc every 5 epochs
+
+Estimated time: ~6-8 hours on RTX 4070.
+
+### What to look for
+
+Watch the printout every 5 epochs. Good signs:
+- val_acc climbing above 40% (currently plateaus at 37%)
+- val_loss dropping below 2.5 (currently 2.527)
+- These indicate the model is learning more of the distribution
+
+### After training completes
+
+Evaluate the new checkpoint:
+
+```bash
+python evaluate.py --experiment experiments.vqvae_ar_transformer -n 2000 --seeds 5
+```
+
+This runs 5-seed evaluation with n=2000 (rigorous, not the n=200 smoke test).
+Compare the new AUC to the current 0.890.
+
+### If tokenized data doesn't exist yet
+
+If `training/vqvae_token_seqs.npy` doesn't exist, run tokenization first:
+
+```bash
+python -m training.tokenize_trajectories
+```
+
+This takes ~10 minutes and only needs to run once.
+
+---
+
 ## What NOT to do
 
-- Don't modify METHODOLOGY.md, EXPERIMENTS.md, or any code
+- Don't modify METHODOLOGY.md, EXPERIMENTS.md, or any code beyond the two training params
 - Don't add CI, CHANGELOG, or release workflows
 - Don't change the version number
 - Don't add the feature_distributions.png if it didn't generate cleanly
