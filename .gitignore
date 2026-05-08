@@ -10,5 +10,4 @@ data/
 .venv/
 .pytest_cache/
 .claude/
-figures/*.png
 uv.lock
