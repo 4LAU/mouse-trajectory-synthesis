@@ -5,15 +5,17 @@
 
 Generative modeling of human mouse trajectories. Includes an evaluation framework, a corpus replay baseline, and implementations of the generative approaches tested.
 
----
+## Key Insight
 
-> **Key finding:** Human mouse trajectories contain discrete zero-displacement stalls
-> (6.14% of 125 Hz samples) embedded in continuous motion. These stalls produce 100%
-> of the measured curvature signal. No continuous generative model (CFM, DDPM, GRU)
-> can produce exact-zero displacements. This is fundamentally a mixed continuous-discrete
-> generation problem, and recognizing it reframes the entire research direction.
+Human mouse movements aren't purely continuous. At 125 Hz sampling, 6.14% of all samples are exact zero-displacement stalls — the cursor sits perfectly still for one or more frames before moving again. These stalls aren't noise. They happen at specific points during movement (direction changes, deceleration phases) and they produce essentially all of the measured curvature signal in the trajectory.
 
----
+This matters because continuous generative models (diffusion, flow matching, GRUs) output probability distributions over real-valued coordinates. They can get arbitrarily close to zero displacement, but they cannot produce exact zeros. The result is that every continuous model we tested — across 145+ experiments — fails to reproduce the curvature and angular velocity statistics that a classifier uses to distinguish human from synthetic trajectories.
+
+The breakthrough came from treating this as a mixed continuous-discrete problem. VQ-VAE discretizes mouse movements into a codebook of 1024 motion tokens plus a dedicated stall token. An autoregressive transformer then generates sequences of these tokens, naturally producing both smooth motion and exact-zero stalls. This is the same insight that made discrete codecs work for speech (VALL-E) and body motion (T2M-GPT).
+
+![Real vs Generated Trajectories](figures/trajectory_overlay.png)
+
+> For the full analysis — 18 kinematic features, the discrete stall discovery, why each model family hits a ceiling, and 145+ experiment results — see **[METHODOLOGY.md](METHODOLOGY.md)**.
 
 ## Results
 
@@ -31,6 +33,10 @@ All numbers are OOB Random Forest AUC on the full 4.16M-trajectory pool (n=2000 
 
 Getting below AUC 0.60 with a generative model requires solving the mixed continuous-discrete problem: continuous architectures simply cannot produce the exact-zero displacements that dominate curvature statistics.
 
+![AUC by Architecture Family](figures/auc_progression.png)
+
+![Feature Distribution Comparison](figures/feature_distributions.png)
+
 ## Problem Statement
 
 Can generative models capture full human motor kinematics without access to a trajectory corpus at inference time?
@@ -47,8 +53,6 @@ The evaluation is adversarial: a Random Forest classifier tries to distinguish g
 - **Random Forest OOB AUC**: no held-out split needed, adversarial by construction
 - **Distributed feature importance**: no single feature dominates, so generation must be realistic across the full kinematic profile
 - **Scale-invariant**: features are computed on normalized arc-length trajectories
-
-See [METHODOLOGY.md](METHODOLOGY.md) for the full evaluation framework, feature definitions, and the stall analysis that identified the continuous-discrete gap.
 
 ## Quick Start
 

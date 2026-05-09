@@ -187,3 +187,37 @@ then `python -m training.tokenize_trajectories`).
 - Don't add CI, CHANGELOG, or release workflows
 - Don't change the version number
 - Don't add the feature_distributions.png if it didn't generate cleanly
+
+---
+
+## Retraining Results (2026-05-08)
+
+### What was done
+
+- Tokenized full 3.74M training set (was capped at 500K)
+- Trained transformer on 1M trajectories for 12 epochs (16.3 hours on RTX 4070)
+- val_acc improved from 37% to 57%, val_loss from 2.53 to 1.74
+
+### Result: regression
+
+The retrained model scored AUC ~0.999 across all seeds (vs 0.892 for the original). Higher next-token accuracy did not translate to better generation quality. The model became trivially detectable by the RF classifier.
+
+| Seed | AUC (retrained) | AUC (original) |
+|------|-----------------|----------------|
+| 42   | 0.9995          | 0.892          |
+| 123  | 0.9989          | -              |
+| 456  | 0.9995          | -              |
+| 789  | 0.9995          | -              |
+| 1024 | 0.9989          | -              |
+
+The original checkpoint was restored from the GitHub release.
+
+### Why it failed
+
+Most likely cause: the original transformer was trained on 200K trajectories tokenized from the same distribution that the VQ-VAE was trained on. The retrained model used 1M trajectories from a broader pool (3.74M total, including DFL/Chaoshen/Bogazici datasets that weren't in the original VQ-VAE training set). The VQ-VAE codebook doesn't represent these additional distributions well, so the transformer learned to predict tokens that decode to unrealistic trajectories.
+
+### What would actually help
+
+1. **Retrain the VQ-VAE first** on the full 3.74M pool, then re-tokenize, then retrain the transformer. The VQ-VAE codebook is the bottleneck.
+2. **Use the same 200K subset** but train for more epochs (the original only did 40). This would improve convergence without distribution mismatch.
+3. **GRPO fine-tuning** with the adversarial AUC as the reward signal. This was done in the original research and is what brought 0.93 down to 0.892.
