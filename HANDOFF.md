@@ -221,3 +221,103 @@ Most likely cause: the original transformer was trained on 200K trajectories tok
 1. **Retrain the VQ-VAE first** on the full 3.74M pool, then re-tokenize, then retrain the transformer. The VQ-VAE codebook is the bottleneck.
 2. **Use the same 200K subset** but train for more epochs (the original only did 40). This would improve convergence without distribution mismatch.
 3. **GRPO fine-tuning** with the adversarial AUC as the reward signal. This was done in the original research and is what brought 0.93 down to 0.892.
+
+---
+
+## Remaining Evaluation Improvements (Requires GPU)
+
+These address peer-review critique points. Items #1, #3, #5, #8, #9 were
+already completed on the MacBook (evaluate.py now has GBM + 5-fold CV,
+METHODOLOGY.md has constraint justification, corpus replay reframing, and
+CFG/GRPO documentation).
+
+### #4 — Confidence Intervals (Multi-Seed Runs)
+
+Run all models with 10 seeds and report mean +/- std:
+
+```bash
+for seed in 42 123 456 789 1024 2048 3141 4096 5555 9999; do
+  python evaluate.py --experiment experiments.vqvae_ar_transformer --n-synthetic 2000 --seed $seed
+  python evaluate.py --experiment experiments.ddpm_arclen --n-synthetic 2000 --seed $seed
+  python evaluate.py --experiment experiments.corpus_replay --n-synthetic 2000 --seed $seed
+done
+```
+
+The evaluator now prints RF OOB AUC, RF 5-fold CV AUC, and GBM 5-fold CV AUC
+for each run. Collect all numbers and compute mean/std per model. Update the
+README results table with confidence intervals.
+
+Estimated time: ~2 hours on RTX 4070.
+
+### #2 — Feature Ablation
+
+Test whether the 18 features are sufficient by running a leave-one-out analysis:
+
+For each of the 18 features, remove it and re-run the RF classifier. If AUC
+doesn't change, the feature is redundant. If AUC drops, the feature carries
+unique signal. This can be done with the existing `evaluate.py` by modifying
+the feature matrix before classification.
+
+Also consider training a raw-trajectory discriminator (1D-CNN or LSTM on
+raw (x,y,t) sequences) to check for signal the hand-crafted features miss.
+
+Estimated time: ~4-6 hours.
+
+### #7 — Stall Ablation (MOST IMPORTANT EXPERIMENT)
+
+This is the single most impactful experiment for scientific credibility. It
+proves the stall thesis.
+
+**Quick version (soft ablation):** Modify `experiments/vqvae_ar_transformer.py`
+to set P(token 0) = 0 at inference time (mask the stall token logits before
+sampling). Compare AUC and curvature against the unmodified model. If AUC gets
+worse, it proves the stall token is doing real work.
+
+**Proper version (retrain without stall):** Modify `training/train_vqvae.py`
+to remove the stall token, retrain VQ-VAE, re-tokenize, retrain transformer.
+Compare full pipeline. This is 8-12 hours but produces a definitive result.
+
+### #6 — Cross-Dataset Analysis
+
+Tag each trajectory with its source dataset during `prepare_training_data.py`.
+Then evaluate per-dataset: does the model work equally well on Balabit vs.
+SapiMouse vs. DFL vs. Chaoshen vs. Bogazici? Reveals whether the model
+generalizes or is just memorizing one dataset's distribution.
+
+Estimated time: ~4-6 hours (mostly re-processing data with source labels).
+
+### #10 — External Bot-Detection Benchmark
+
+**BeCAPTCHA-Mouse** (Acien et al., Pattern Recognition 2022) is the closest
+thing to a standardized evaluation:
+- GitHub: https://github.com/BiDAlab/BeCAPTCHA-Mouse
+- Dataset requires a signed license agreement sent to atvs@uam.es
+- Includes SVM, RF, MLP classifiers trained on neuromotor features
+- Feed our generated trajectories through their pipeline, report detection rate
+
+**DELBOT-Mouse** is a lighter-weight alternative:
+- GitHub: https://github.com/chrisgdt/DELBOT-Mouse
+- Open-source TensorFlow.js library with pretrained models
+- Faster to integrate but less rigorous
+
+Estimated time: 1-2 days (includes contacting BiDAlab for license).
+
+---
+
+## Novel Architecture: ZIMT (Zero-Inflated Mouse Trajectory Generator)
+
+See **[RESEARCH.md](RESEARCH.md)** for the complete proposal, literature review,
+five candidate architectures evaluated, and phased research plan.
+
+Summary: ZIMT is a novel generative architecture that uses a binary gate (stall
+vs. move) combined with a Mixture Density Network (continuous displacements) on
+a Mamba or Transformer backbone. It eliminates the VQ-VAE codebook bottleneck
+while natively modeling exact-zero stalls. No published work combines
+zero-inflated output heads with sequential trajectory generation — this is
+genuinely novel.
+
+The research plan uses Autoresearch for autonomous overnight iteration on the
+RTX 4070. Phase 1 targets AUC < 0.90, Phase 2 targets AUC < 0.85.
+
+Key papers to download and study before implementation are listed in RESEARCH.md
+with full URLs.

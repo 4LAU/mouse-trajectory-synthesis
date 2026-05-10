@@ -46,15 +46,27 @@ Mouse trajectory synthesis has an easy solution: record millions of real
 trajectories and replay them with minor transformations. A nearest-neighbor
 retrieval system matched on angle and distance, applied with translation only
 (no rotation - rotation destroys angular dynamics), achieves AUC 0.498 against
-a 4.16-million-trajectory corpus. This is the theoretical floor for an
-out-of-bag Random Forest classifier - essentially random guessing.
+a 4.16-million-trajectory corpus. This serves as a **calibration point**: it
+confirms the evaluator is well-behaved (two draws from the same distribution are
+indistinguishable, as expected) and establishes the scale of the AUC axis. It is
+not a research finding - it is a sanity check that validates the evaluation
+framework before applying it to generative models.
 
 But replay is not generation. It requires a large trajectory database at
-inference time. The research question asks whether a model can learn the
-underlying structure of human mouse movement well enough to synthesize novel
-trajectories from scratch - trajectories that are not copies or perturbations of
-recorded data, but genuinely new sequences that obey the same motor control
-dynamics.
+inference time. This creates three practical problems: (1) **privacy** - the
+corpus contains real user movement data, and shipping it means distributing
+behavioral biometric signatures that could identify individuals; (2) **deployment
+size** - a 4.16M-trajectory corpus is hundreds of megabytes, impractical for
+client-side or embedded deployment; (3) **fingerprinting risk** - a finite corpus
+means repeated trajectories, which an adversary could detect by matching against
+a known copy of the database.
+
+The research question asks whether a model can learn the underlying structure of
+human mouse movement well enough to synthesize novel trajectories from scratch -
+trajectories that are not copies or perturbations of recorded data, but genuinely
+new sequences that obey the same motor control dynamics. A generative model ships
+only learned weights (< 10 MB), produces unique trajectories on every call, and
+requires no access to real user data at inference time.
 
 This is a harder problem than it appears. Human mouse trajectories encode the
 full kinematic stack of the motor control system: velocity profiles shaped by
@@ -593,7 +605,36 @@ curvature and low AUC remains an empirical question - but it is the first
 approach where the representational limitation is removed rather than worked
 around.
 
-### 5.6 Broken Feature Correlations
+### 5.6 Classifier-Free Guidance and GRPO Fine-Tuning
+
+The VQ-VAE + transformer result (AUC 0.892) uses two techniques beyond standard
+autoregressive training:
+
+**Classifier-Free Guidance (CFG).** At inference time, each token prediction
+runs two forward passes: one with full endpoint conditioning (remaining distance,
+remaining displacement, remaining fraction) and one with null endpoint
+conditioning (zeros). The final logits are:
+
+```
+logits = logits_uncond + scale * (logits_cond - logits_uncond)
+```
+
+with `scale = 3.0`. This amplifies the effect of endpoint conditioning, producing
+trajectories that more reliably reach the target endpoint. The scale of 3.0 was
+selected empirically — values below 2.0 produced insufficient endpoint accuracy,
+values above 5.0 caused the model to over-commit to straight-line paths. The
+implementation is in `experiments/vqvae_ar_transformer.py` (lines 183-189).
+
+**GRPO (Group Relative Policy Optimization).** The shipped transformer checkpoint
+was fine-tuned using GRPO with the adversarial RF AUC as the reward signal. This
+brought the AUC from ~0.93 (base transformer) to 0.892.
+
+*Limitation:* The GRPO fine-tuning code is not included in this repository. The
+checkpoint reflects the result of this process, but the training procedure is not
+reproducible from the shipped code alone. The base (pre-GRPO) transformer
+training is fully reproducible via `training/train_transformer.py`.
+
+### 5.7 Broken Feature Correlations
 
 Beyond the curvature ceiling, continuous generative models exhibit a subtler
 failure: **broken inter-feature correlations.** In human data,
@@ -615,7 +656,7 @@ marginal distributions of each feature individually are well-matched. This is
 why the adversarial classifier framework is more diagnostic than per-feature
 Wasserstein distance: it captures correlation structure, not just marginals.
 
-### 5.7 What Not to Try: Negative Results as Data
+### 5.8 What Not to Try: Negative Results as Data
 
 Over 145 experiments produced a substantial body of negative results. These are
 valuable for narrowing the architectural search space. Approaches that have been

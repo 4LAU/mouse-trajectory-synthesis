@@ -17,8 +17,9 @@ import sys
 import time
 
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
 from features import FEATURE_NAMES, extract_feature_matrix, normalized_wasserstein_by_feature
 
@@ -178,10 +179,11 @@ def main(argv: list[str] | None = None) -> None:
     # 7. Wasserstein diagnostics
     print_wasserstein_diagnostics(human_balanced, synth_balanced)
 
-    # 8. Train adversarial classifier
+    # 8. Train adversarial classifiers
     X = np.vstack([human_balanced, synth_balanced])
     y = np.concatenate([np.zeros(n_use), np.ones(n_use)])
 
+    # 8a. Random Forest with OOB
     clf = RandomForestClassifier(
         n_estimators=100,
         oob_score=True,
@@ -190,15 +192,32 @@ def main(argv: list[str] | None = None) -> None:
     )
     clf.fit(X, y)
 
-    # 9. Compute OOB AUC
     oob_proba = clf.oob_decision_function_[:, 1]
-    auc = roc_auc_score(y, oob_proba)
+    auc_rf_oob = roc_auc_score(y, oob_proba)
 
-    # 10. Feature importances
+    # 8b. Held-out AUC via 5-fold cross-validation (RF)
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=args.seed)
+    rf_cv = RandomForestClassifier(
+        n_estimators=100, n_jobs=-1, random_state=args.seed,
+    )
+    cv_proba = cross_val_predict(rf_cv, X, y, cv=cv, method="predict_proba")[:, 1]
+    auc_rf_cv = roc_auc_score(y, cv_proba)
+
+    # 8c. Gradient Boosting (second classifier family)
+    gbm = GradientBoostingClassifier(
+        n_estimators=100, max_depth=4, random_state=args.seed,
+    )
+    gbm_cv_proba = cross_val_predict(gbm, X, y, cv=cv, method="predict_proba")[:, 1]
+    auc_gbm_cv = roc_auc_score(y, gbm_cv_proba)
+
+    # 9. Feature importances
     print_feature_importances(clf)
 
-    # 11. Final result
-    print(f"val_auc: {auc:.4f}")
+    # 10. Final results
+    print(f"val_auc: {auc_rf_oob:.4f}")
+    print(f"  RF OOB AUC:      {auc_rf_oob:.4f}")
+    print(f"  RF 5-fold CV:    {auc_rf_cv:.4f}")
+    print(f"  GBM 5-fold CV:   {auc_gbm_cv:.4f}")
 
 
 if __name__ == "__main__":
