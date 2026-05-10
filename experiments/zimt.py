@@ -3,7 +3,7 @@
 Generates trajectories autoregressively with a binary stall gate and
 MDN displacement head on a Transformer backbone.
 
-Expected AUC: TBD (novel architecture, first run)
+AUC: ~0.76 (Phase 2, n=200, vs DDPM ~0.93)
 """
 from __future__ import annotations
 
@@ -24,8 +24,8 @@ from models.zimt import ZIMTModel, sample_step
 _parser = argparse.ArgumentParser(add_help=False)
 _parser.add_argument("--data-dir", default=os.environ.get("DATA_DIR", "./data"))
 _parser.add_argument("--checkpoint", default=None)
-_parser.add_argument("--temperature", type=float, default=1.0)
-_parser.add_argument("--gate-bias", type=float, default=0.0)
+_parser.add_argument("--temperature", type=float, default=0.85)
+_parser.add_argument("--gate-bias", type=float, default=-1.0)
 _args, _ = _parser.parse_known_args()
 
 _DATA_DIR = Path(_args.data_dir)
@@ -98,7 +98,7 @@ def generate_path(
     n_target = max(5, int(round(total_duration * _HZ)))
     n_target = min(n_target, _MAX_SEQ - 2)
 
-    # Autoregressive generation — grow input tensor incrementally (O(T) per step)
+    # Autoregressive generation in normalized space (training data has unit distance)
     # Input features: (dx_prev, dy_prev, stall_prev, remaining_dx, remaining_dy, remaining_frac)
     input_buf = torch.zeros(1, n_target, 6, device=_DEVICE)
     generated_dxdy = []
@@ -106,18 +106,15 @@ def generate_path(
 
     with torch.no_grad():
         for step in range(n_target):
-            # Fill current step's input features
-            if step == 0:
-                pass  # all zeros for first step (no previous displacement)
-            else:
+            if step > 0:
                 ddx, ddy = generated_dxdy[step - 1]
                 input_buf[0, step, 0] = ddx
                 input_buf[0, step, 1] = ddy
                 input_buf[0, step, 2] = 1.0 if (ddx == 0 and ddy == 0) else 0.0
 
-            # Remaining displacement BEFORE current step (matches training)
-            input_buf[0, step, 3] = (dx_total - cum_dx) / max(total_dist, 1.0)
-            input_buf[0, step, 4] = (dy_total - cum_dy) / max(total_dist, 1.0)
+            # Remaining displacement in normalized space (matches training)
+            input_buf[0, step, 3] = cos_a - cum_dx
+            input_buf[0, step, 4] = sin_a - cum_dy
             input_buf[0, step, 5] = 1.0 - step / n_target
 
             params = _model(input_buf[:, :step + 1], condition)
@@ -129,12 +126,12 @@ def generate_path(
             cum_dx += dx
             cum_dy += dy
 
-    # Build positions
+    # Build positions — scale from normalized space to pixels
     positions = [(start_x, start_y)]
     cx, cy = start_x, start_y
     for ddx, ddy in generated_dxdy:
-        cx += ddx
-        cy += ddy
+        cx += ddx * total_dist
+        cy += ddy * total_dist
         positions.append((cx, cy))
 
     # Endpoint correction: scale final 20%
