@@ -224,6 +224,81 @@ Most likely cause: the original transformer was trained on 200K trajectories tok
 
 ---
 
+## Evaluation Consistency Bug (2026-05-09)
+
+### Discovery
+
+The precomputed `human_eval_features.npy` in the GitHub release was computed
+with a **different feature extraction pipeline** than the repo's `features.py`.
+When human and synthetic features are computed with the same code, the results
+change dramatically for VQ-VAE but not for other models.
+
+### How it was found
+
+1. VQ-VAE transformer consistently scored AUC ~0.999 instead of the reported 0.892
+2. Checkpoints verified identical to release (md5 match)
+3. `human_eval_features.npy` md5 did NOT match the release — the `data/` copy came
+   from the autoresearch pipeline (copied from pokemon repo), not from `setup_data.py`
+4. Even after restoring the release version, AUC remained ~0.999
+5. Recomputing human features from the full pool using current `features.py` showed
+   scale differences: fresh mean_velocity std=8275 vs precomputed std=1101
+6. Human-vs-human sanity check: AUC 0.5009 (confirms fresh features are self-consistent)
+
+### Root cause
+
+The autoresearch framework used a different feature extraction than the repo's
+`features.py`. The GRPO fine-tuning optimized the transformer against that
+specific feature set. When evaluated with `features.py`, the GRPO gains
+disappear — the model overfits to the training-time discriminator features.
+
+DDPM and corpus replay are architecture-agnostic and unaffected by the feature
+change. VQ-VAE is affected because its quality depended on GRPO adversarial
+tuning against features that no longer match.
+
+### Corrected results (5-seed, n=2000, fresh human_eval_features.npy)
+
+| Model | Corrected AUC | Original AUC | Change |
+|-------|--------------|-------------|--------|
+| Corpus replay (50K demo) | 0.594 ± 0.008 | ~0.60 | Confirmed |
+| DDPM (arc-length) | 0.930 ± 0.003 | 0.933 | Confirmed |
+| VQ-VAE + Transformer | 0.9987 ± 0.0000 | 0.892 | Invalidated |
+| VQ-VAE no-stall (ablation) | 0.9983 ± 0.0001 | — | New |
+
+Individual DDPM seeds: 0.9335, 0.9308, 0.9278, 0.9308, 0.9259
+Individual corpus seeds: 0.5885, 0.5859, 0.5929, 0.6006, 0.6043
+VQ-VAE seeds (2): 0.9987, 0.9987
+VQ-VAE no-stall seeds (2): 0.9982, 0.9984
+
+### Stall ablation result
+
+Masking the stall token (token 0) at inference had no effect: AUC 0.9983 vs
+0.9987. With the model already trivially detectable due to VQ-VAE quantization
+artifacts, the stall token contributes nothing. The ablation would only be
+meaningful if the base model were closer to human-level (AUC < 0.95).
+
+### Implications
+
+1. **DDPM is the best generative model**, not VQ-VAE. The ranking reversed.
+2. **The stall thesis is unresolved**, not disproven. The VQ-VAE codebook
+   introduces quantization artifacts (detectable in acceleration, jerk, angular
+   velocity) that dominate the stall signal. A model that handles stalls without
+   quantizing all motion (ZIMT) could still validate the stall hypothesis.
+3. **The 0.892 is not reproducible** from the shipped code. Reproducing it
+   requires the autoresearch feature extraction pipeline, which is not in this repo.
+4. **To fix properly**: either (a) include the autoresearch `features.py` so the
+   0.892 is reproducible, or (b) recompute `human_eval_features.npy` with the
+   repo's `features.py` and update all reported numbers. Option (b) is the
+   honest choice for a public repo.
+
+### Files changed
+
+- `data/human_eval_features.npy` — replaced with fresh computation from full pool
+  using current `features.py` (seed 42, 2000 trajectories)
+- `data/human_eval_features_release.npy` — backup of the release version
+- `experiments/vqvae_ar_transformer_no_stall.py` — stall ablation experiment
+
+---
+
 ## Remaining Evaluation Improvements (Requires GPU)
 
 These address peer-review critique points. Items #1, #3, #5, #8, #9 were

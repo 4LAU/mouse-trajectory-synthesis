@@ -11,3 +11,8 @@ data/
 .pytest_cache/
 .claude/
 uv.lock
+eval_results.log
+eval_corrected.log
+run_all_evals.sh
+run_corrected_evals.sh
+parse_eval_results.py

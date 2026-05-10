@@ -19,19 +19,21 @@ The breakthrough came from treating this as a mixed continuous-discrete problem.
 
 ## Results
 
-All numbers are OOB Random Forest AUC on the full 4.16M-trajectory pool (n=2000 synthetic, seed 42), cross-validated against a second classifier (Gradient Boosting) for robustness. Lower is better: 0.50 means the classifier can't tell human from synthetic.
+All numbers are OOB Random Forest AUC on the full 4.16M-trajectory pool (n=2000 synthetic, 5 seeds), cross-validated against a second classifier (Gradient Boosting) for robustness. Lower is better: 0.50 means the classifier can't tell human from synthetic.
 
-| Approach | AUC | Architecture | What it tells us |
+| Approach | AUC (mean ± std) | Architecture | What it tells us |
 |---|---|---|---|
-| Corpus replay | 0.60 | kNN translate-only (50K demo pool) | Baseline, scales with pool size (reaches 0.50 at 4.16M) |
-| **VQ-VAE + Transformer** | **0.892** | Discrete tokens + GRPO-finetuned AR + CFG | Best generative result: models stalls as first-class tokens |
-| DDPM | 0.933 | 1D U-Net, DDIM sampling (eta=0) | Smooth conditional means lack micro-structure |
+| Corpus replay | 0.594 ± 0.008 | kNN translate-only (50K demo pool) | Calibration point; scales with pool size (reaches 0.50 at 4.16M) |
+| **DDPM** | **0.930 ± 0.003** | 1D U-Net, DDIM sampling (eta=0) | Best generative result; continuous output avoids quantization artifacts |
+| VQ-VAE + Transformer | 0.999 ± 0.000 | Discrete tokens + GRPO-finetuned AR + CFG | Codebook quantization introduces detectable artifacts |
 | CFM | ~0.99 | Same U-Net, Euler ODE (2-channel) | Position-only model; timing channel was never completed |
 | Stall injection | ~1.0 | DDPM + post-hoc jitter | Proves post-hoc modification is a dead end |
 
-**0.892 is the best result for fully generative mouse trajectory synthesis**, with no corpus lookup at inference time. Corpus replay serves as a calibration point: the shipped 50K demo pool gives ~0.60, and the full 4.16M corpus gives ~0.50 (confirming the evaluator is well-behaved — two draws from the same distribution are indistinguishable, as expected).
+**0.930 is the best result for fully generative mouse trajectory synthesis**, with no corpus lookup at inference time. Corpus replay serves as a calibration point: the shipped 50K demo pool gives ~0.59, and the full 4.16M corpus gives ~0.50 (confirming the evaluator is well-behaved — two draws from the same distribution are indistinguishable, as expected).
 
-Getting below AUC 0.60 with a generative model requires solving the mixed continuous-discrete problem: continuous architectures simply cannot produce the exact-zero displacements that dominate curvature statistics.
+> **Note on previously reported VQ-VAE results:** An earlier version of this README reported AUC 0.892 for VQ-VAE + Transformer. That number was measured against precomputed human features from a different feature extraction pipeline. When human and synthetic features are computed consistently using the same `features.py`, VQ-VAE scores 0.999 — the codebook quantization introduces acceleration and angular velocity artifacts that a classifier trivially detects. See [HANDOFF.md](HANDOFF.md) for the full investigation. DDPM and corpus replay results were unaffected by this correction.
+
+The gap between DDPM (0.93) and corpus replay (0.59) remains the core challenge. Closing it requires a generative architecture that avoids both the blurriness of continuous diffusion models and the quantization artifacts of discrete tokenization — see [RESEARCH.md](RESEARCH.md) for a proposed approach.
 
 ![AUC by Architecture Family](figures/auc_progression.png)
 
