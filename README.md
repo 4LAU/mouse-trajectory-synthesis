@@ -31,7 +31,7 @@ All numbers are OOB Random Forest AUC on the full 4.16M-trajectory pool (n=2000 
 
 **0.930 is the best result for fully generative mouse trajectory synthesis**, with no corpus lookup at inference time. Corpus replay serves as a calibration point: the shipped 50K demo pool gives ~0.59, and the full 4.16M corpus gives ~0.50 (confirming the evaluator is well-behaved — two draws from the same distribution are indistinguishable, as expected).
 
-> **Note on previously reported VQ-VAE results:** An earlier version of this README reported AUC 0.892 for VQ-VAE + Transformer. That number was measured against precomputed human features from a different feature extraction pipeline. When human and synthetic features are computed consistently using the same `features.py`, VQ-VAE scores 0.999 — the codebook quantization introduces acceleration and angular velocity artifacts that a classifier trivially detects. See [HANDOFF.md](HANDOFF.md) for the full investigation. DDPM and corpus replay results were unaffected by this correction.
+> **Note on previously reported VQ-VAE results:** An earlier version of this README reported AUC 0.892 for VQ-VAE + Transformer. That number was measured against precomputed human features from a different feature extraction pipeline (the original is preserved in [`autoresearch/features.py`](autoresearch/features.py)). When human and synthetic features are computed consistently using the same `features.py`, VQ-VAE scores 0.999 — the codebook quantization introduces acceleration and angular velocity artifacts that a classifier trivially detects. See [HANDOFF.md](HANDOFF.md) for the full investigation. DDPM and corpus replay results were unaffected by this correction.
 
 The gap between DDPM (0.93) and corpus replay (0.59) remains the core challenge. Closing it requires a generative architecture that avoids both the blurriness of continuous diffusion models and the quantization artifacts of discrete tokenization — see [RESEARCH.md](RESEARCH.md) for a proposed approach.
 
@@ -103,6 +103,10 @@ mouse-trajectory-synthesis/
 │   ├── train_transformer.py     # AR transformer training loop
 │   └── eval_holdout.py          # 4-discriminator holdout suite
 ├── notebooks/                   # Visualization notebooks
+├── autoresearch/                # Original research code (145+ experiments)
+│   ├── features.py              # Original feature extraction (see note below)
+│   ├── archive/                 # Historical experiment scripts (v59-v147)
+│   └── gen/                     # Original models, training, GRPO fine-tuning
 ├── METHODOLOGY.md               # Evaluation framework and research findings
 ├── EXPERIMENTS.md               # Full log of 145+ experiments
 └── LICENSE                      # MIT
