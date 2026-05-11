@@ -190,6 +190,15 @@ def zimt_loss(params, target_dxdy, target_stall, mask, gate_pos_weight=5.0):
     return gate_loss + mdn_loss, gate_loss.detach(), mdn_loss.detach()
 
 
+def jerk_loss(target_dxdy, mask):
+    """Minimum-jerk regularization: penalize squared jerk (third derivative of position)."""
+    speed = torch.sqrt((target_dxdy ** 2).sum(dim=-1) + 1e-8)  # (B, T)
+    accel = speed[:, 1:] - speed[:, :-1]  # (B, T-1)
+    jerk = accel[:, 1:] - accel[:, :-1]   # (B, T-2)
+    jerk_mask = mask[:, 2:].float()
+    return (jerk ** 2 * jerk_mask).sum() / jerk_mask.sum().clamp(min=1.0)
+
+
 def sample_step(params, temperature=1.0, gate_bias=0.0):
     """
     Sample (dx, dy, is_stall) from model output for the last timestep.

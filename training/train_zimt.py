@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader, Dataset
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from models.zimt import ZIMTModel, zimt_loss
+from models.zimt import ZIMTModel, zimt_loss, jerk_loss
 
 TRAINING_DIR = Path(__file__).resolve().parent
 DEVICE = (
@@ -126,11 +126,42 @@ def build_input_features(dxdy, stall, mask, endpoints, conditions):
     return torch.cat([dx_prev, stall_prev, remaining_norm, remaining_frac], dim=-1)
 
 
-def train_epoch(model, loader, optimizer, gate_pw, max_len):
+@torch.no_grad()
+def sample_from_params(params):
+    """Sample (dx, dy) and stall from model output for scheduled sampling."""
+    gate_logit = params["gate_logit"]
+    stall_probs = torch.sigmoid(gate_logit)
+    sampled_stall = torch.bernoulli(stall_probs)
+
+    pi = params["pi"]
+    mu = params["mu"]
+    sigma = params["sigma"]
+    rho = params["rho"]
+    B, T, M = pi.shape
+
+    comp_idx = torch.multinomial(pi.reshape(B * T, M), 1).reshape(B, T)
+    ci = comp_idx.unsqueeze(-1).unsqueeze(-1).expand(B, T, 1, 2)
+    sel_mu = mu.gather(2, ci).squeeze(2)
+    sel_sigma = sigma.gather(2, ci).squeeze(2)
+    sel_rho = rho.gather(2, comp_idx.unsqueeze(-1)).squeeze(2)
+
+    z1 = torch.randn(B, T, device=gate_logit.device)
+    z2 = torch.randn(B, T, device=gate_logit.device)
+    dx = sel_mu[:, :, 0] + sel_sigma[:, :, 0] * z1
+    dy = sel_mu[:, :, 1] + sel_sigma[:, :, 1] * (
+        sel_rho * z1 + torch.sqrt((1 - sel_rho ** 2).clamp(min=1e-8)) * z2
+    )
+    sampled_dxdy = torch.stack([dx, dy], dim=-1)
+    sampled_dxdy = sampled_dxdy * (1 - sampled_stall.unsqueeze(-1))
+    return sampled_dxdy, sampled_stall
+
+
+def train_epoch(model, loader, optimizer, gate_pw, max_len, jerk_lambda=0.0, ss_prob=0.0):
     model.train()
     total_loss = 0.0
     total_gate = 0.0
     total_mdn = 0.0
+    total_jerk = 0.0
     n_batches = 0
 
     for dxdy, stall, mask, cond, ep in loader:
@@ -141,9 +172,27 @@ def train_epoch(model, loader, optimizer, gate_pw, max_len):
         ep = ep.to(DEVICE)
 
         input_feat = build_input_features(dxdy, stall, mask, ep, cond)
-        params = model(input_feat, cond)
 
+        if ss_prob > 0:
+            with torch.no_grad():
+                params_tf = model(input_feat, cond)
+                s_dxdy, s_stall = sample_from_params(params_tf)
+            B, T, _ = dxdy.shape
+            use_model = torch.bernoulli(
+                torch.full((B, T), ss_prob, device=DEVICE),
+            ).bool() & mask
+            use_model[:, 0] = False
+            mixed_dxdy = torch.where(use_model.unsqueeze(-1), s_dxdy, dxdy)
+            mixed_stall = torch.where(use_model, s_stall, stall.float())
+            input_feat = build_input_features(mixed_dxdy, mixed_stall, mask, ep, cond)
+
+        params = model(input_feat, cond)
         loss, gate_l, mdn_l = zimt_loss(params, dxdy, stall, mask, gate_pos_weight=gate_pw)
+
+        if jerk_lambda > 0:
+            jl = jerk_loss(dxdy, mask)
+            loss = loss + jerk_lambda * jl
+            total_jerk += jl.item()
 
         optimizer.zero_grad()
         loss.backward()
@@ -155,7 +204,7 @@ def train_epoch(model, loader, optimizer, gate_pw, max_len):
         total_mdn += mdn_l.item()
         n_batches += 1
 
-    return total_loss / n_batches, total_gate / n_batches, total_mdn / n_batches
+    return total_loss / n_batches, total_gate / n_batches, total_mdn / n_batches, total_jerk / max(n_batches, 1)
 
 
 @torch.no_grad()
@@ -226,6 +275,9 @@ def main():
     parser.add_argument("--n-components", type=int, default=8)
     parser.add_argument("--d-model", type=int, default=256)
     parser.add_argument("--n-layers", type=int, default=6)
+    parser.add_argument("--jerk-lambda", type=float, default=0.0)
+    parser.add_argument("--ss-max", type=float, default=0.3,
+                        help="Max scheduled sampling probability")
     args = parser.parse_args()
 
     signal.signal(signal.SIGINT, _handle_signal)
@@ -317,17 +369,25 @@ def main():
         optimizer, T_max=cfg["n_epochs"],
     )
 
-    print(f"\nTraining ({cfg['n_epochs']} epochs)...")
+    n_epochs = cfg["n_epochs"]
+    ss_max = args.ss_max
+    if ss_max > 0:
+        print(f"  Scheduled sampling: 0 -> {ss_max:.2f} over {n_epochs} epochs")
+
+    print(f"\nTraining ({n_epochs} epochs)...")
     best_val_loss = float("inf")
 
-    for epoch in range(start_epoch, start_epoch + cfg["n_epochs"]):
+    for epoch in range(start_epoch, start_epoch + n_epochs):
         if _stop_requested:
             print("[ZIMT] Stopping early.")
             break
 
+        ss_prob = ss_max * min((epoch - start_epoch) / max(n_epochs - 1, 1), 1.0)
+
         epoch_t0 = time.time()
-        train_loss, train_gate, train_mdn = train_epoch(
+        train_loss, train_gate, train_mdn, train_jerk = train_epoch(
             model, train_loader, optimizer, args.gate_pos_weight, cfg["max_len"],
+            jerk_lambda=args.jerk_lambda, ss_prob=ss_prob,
         )
         scheduler.step()
 
@@ -347,13 +407,15 @@ def main():
             }, TRAINING_DIR / "zimt_best.pt")
 
         marker = " *BEST*" if is_best else ""
+        jerk_str = f" jerk {train_jerk:.4f}" if args.jerk_lambda > 0 else ""
+        ss_str = f" ss={ss_prob:.2f}" if ss_max > 0 else ""
         print(
             f"  Ep {epoch+1:3d} | "
-            f"train {train_loss:.4f} (gate {train_gate:.4f} mdn {train_mdn:.4f}) | "
+            f"train {train_loss:.4f} (gate {train_gate:.4f} mdn {train_mdn:.4f}{jerk_str}) | "
             f"val {val['loss']:.4f} (gate {val['gate_loss']:.4f} mdn {val['mdn_loss']:.4f}) | "
             f"stall_rec {val['stall_recall']:.2f} mot_rec {val['motion_recall']:.2f} | "
             f"pred_stall {val['pred_stall_rate']:.3f} true {val['true_stall_rate']:.3f} | "
-            f"{epoch_time:.0f}s{marker}"
+            f"{epoch_time:.0f}s{ss_str}{marker}"
         )
 
         # Save latest checkpoint every epoch

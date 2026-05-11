@@ -99,8 +99,7 @@ def generate_path(
     n_target = min(n_target, _MAX_SEQ - 2)
 
     # Autoregressive generation in normalized space (training data has unit distance)
-    # Input features: (dx_prev, dy_prev, stall_prev, remaining_dx, remaining_dy, remaining_frac)
-    input_buf = torch.zeros(1, n_target, 6, device=_DEVICE)
+    input_buf = torch.zeros(1, n_target, _cfg["input_dim"], device=_DEVICE)
     generated_dxdy = []
     cum_dx, cum_dy = 0.0, 0.0
 
@@ -112,7 +111,6 @@ def generate_path(
                 input_buf[0, step, 1] = ddy
                 input_buf[0, step, 2] = 1.0 if (ddx == 0 and ddy == 0) else 0.0
 
-            # Remaining displacement in normalized space (matches training)
             input_buf[0, step, 3] = cos_a - cum_dx
             input_buf[0, step, 4] = sin_a - cum_dy
             input_buf[0, step, 5] = 1.0 - step / n_target
