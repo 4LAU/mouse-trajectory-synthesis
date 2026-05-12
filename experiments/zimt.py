@@ -56,10 +56,19 @@ _model.load_state_dict(_ckpt["model_state_dict"])
 _model.train(False)
 
 _MAX_SEQ = _cfg["max_seq_len"]
+_USE_VELOCITY_GUIDE = _cfg.get("input_dim", 6) == 7
+_POLAR = _ckpt.get("polar", False)
 
+_VELOCITY_TEMPLATE = None
+if _USE_VELOCITY_GUIDE:
+    _VELOCITY_TEMPLATE = torch.from_numpy(
+        np.load(_DATA_DIR / "velocity_template.npy")
+    ).float().to(_DEVICE)
+
+_mode = "polar" if _POLAR else f"{_cfg.get('input_dim', 6)}d"
 print(
     f"[zimt] ZIMT ({_cfg['d_model']}d, {_cfg['n_layers']}L, "
-    f"{_cfg['n_components']}K MDN) | "
+    f"{_cfg['n_components']}K MDN, {_mode}) | "
     f"ep {_ckpt.get('epoch', '?')}, "
     f"val_loss={_ckpt.get('val_loss', 0):.4f}, "
     f"phase={_ckpt.get('phase', '?')}"
@@ -102,23 +111,54 @@ def generate_path(
     input_buf = torch.zeros(1, n_target, _cfg["input_dim"], device=_DEVICE)
     generated_dxdy = []
     cum_dx, cum_dy = 0.0, 0.0
+    running_angle = math.atan2(dy_total, dx_total)
 
     with torch.no_grad():
         for step in range(n_target):
             if step > 0:
                 ddx, ddy = generated_dxdy[step - 1]
-                input_buf[0, step, 0] = ddx
-                input_buf[0, step, 1] = ddy
+                if _POLAR:
+                    speed = math.hypot(ddx, ddy)
+                    if step >= 2:
+                        prev_ddx, prev_ddy = generated_dxdy[step - 2]
+                        prev_angle = math.atan2(prev_ddy, prev_ddx) if math.hypot(prev_ddx, prev_ddy) > 1e-12 else running_angle
+                        cur_angle = math.atan2(ddy, ddx) if speed > 1e-12 else prev_angle
+                        dangle = math.atan2(math.sin(cur_angle - prev_angle), math.cos(cur_angle - prev_angle))
+                    else:
+                        dangle = 0.0
+                    input_buf[0, step, 0] = speed
+                    input_buf[0, step, 1] = dangle
+                else:
+                    input_buf[0, step, 0] = ddx
+                    input_buf[0, step, 1] = ddy
                 input_buf[0, step, 2] = 1.0 if (ddx == 0 and ddy == 0) else 0.0
 
             input_buf[0, step, 3] = cos_a - cum_dx
             input_buf[0, step, 4] = sin_a - cum_dy
             input_buf[0, step, 5] = 1.0 - step / n_target
 
+            if _USE_VELOCITY_GUIDE:
+                progress = step / n_target
+                bin_idx = min(int(progress * (len(_VELOCITY_TEMPLATE) - 1)), len(_VELOCITY_TEMPLATE) - 1)
+                input_buf[0, step, 6] = _VELOCITY_TEMPLATE[bin_idx]
+
             params = _model(input_buf[:, :step + 1], condition)
-            dx, dy, is_stall = sample_step(
-                params, temperature=_TEMPERATURE, gate_bias=_GATE_BIAS,
-            )
+
+            if _POLAR:
+                speed_raw, dangle_raw, is_stall = sample_step(
+                    params, temperature=_TEMPERATURE, gate_bias=_GATE_BIAS,
+                )
+                if is_stall:
+                    dx, dy = 0.0, 0.0
+                else:
+                    speed = abs(speed_raw)
+                    running_angle += dangle_raw
+                    dx = speed * math.cos(running_angle)
+                    dy = speed * math.sin(running_angle)
+            else:
+                dx, dy, is_stall = sample_step(
+                    params, temperature=_TEMPERATURE, gate_bias=_GATE_BIAS,
+                )
 
             generated_dxdy.append((dx, dy))
             cum_dx += dx

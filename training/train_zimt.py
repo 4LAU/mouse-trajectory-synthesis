@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from models.zimt import ZIMTModel, zimt_loss, jerk_loss
 
 TRAINING_DIR = Path(__file__).resolve().parent
+DATA_DIR = TRAINING_DIR.parent / "data"
 DEVICE = (
     torch.device("cuda") if torch.cuda.is_available()
     else torch.device("mps") if torch.backends.mps.is_available()
@@ -86,24 +87,46 @@ def collate_fn(batch):
     return dxdy, stall, mask, cond, ep
 
 
-def build_input_features(dxdy, stall, mask, endpoints, conditions):
-    """
-    Build per-step input features: (dx_prev, dy_prev, stall_prev,
-    remaining_dx, remaining_dy, remaining_frac).
+def dxdy_to_polar(dxdy, stall):
+    """Convert (dx, dy) targets to (speed, delta_angle). Returns same shape."""
+    speed = torch.sqrt((dxdy ** 2).sum(dim=-1, keepdim=True) + 1e-12)  # (B, T, 1)
+    angle = torch.atan2(dxdy[:, :, 1], dxdy[:, :, 0])  # (B, T)
+    delta_angle = torch.zeros_like(angle)
+    delta_angle[:, 1:] = angle[:, 1:] - angle[:, :-1]
+    delta_angle = torch.atan2(torch.sin(delta_angle), torch.cos(delta_angle))
+    stall_mask = stall.bool()
+    delta_angle[stall_mask] = 0.0
+    return torch.cat([speed, delta_angle.unsqueeze(-1)], dim=-1)
 
-    dxdy:      (B, T, 2) target displacements
-    stall:     (B, T) target stall flags
-    mask:      (B, T) valid mask
-    endpoints: (B, 4) [start_x, start_y, end_x, end_y]
-    conditions: (B, 4) [log_dist, log_dur, cos_a, sin_a]
-    Returns:   (B, T, 6) input features
+
+_VELOCITY_TEMPLATE = None
+
+
+def _get_velocity_template(device):
+    global _VELOCITY_TEMPLATE
+    if _VELOCITY_TEMPLATE is None or _VELOCITY_TEMPLATE.device != device:
+        t = np.load(DATA_DIR / "velocity_template.npy")
+        _VELOCITY_TEMPLATE = torch.from_numpy(t).float().to(device)
+    return _VELOCITY_TEMPLATE
+
+
+def build_input_features(dxdy, stall, mask, endpoints, conditions, velocity_guide=False, polar_targets=None):
+    """
+    Build per-step input features.
+
+    Base (6-dim): (dx_prev, dy_prev, stall_prev, remaining_dx, remaining_dy, remaining_frac)
+    With polar: (speed_prev, dangle_prev, stall_prev, remaining_dx, remaining_dy, remaining_frac)
+    With velocity_guide (+1 dim): adds expected_speed from empirical velocity template.
     """
     B, T, _ = dxdy.shape
     device = dxdy.device
 
-    # Previous displacement (shifted right, zero for first step)
-    dx_prev = torch.zeros(B, T, 2, device=device)
-    dx_prev[:, 1:] = dxdy[:, :-1]
+    if polar_targets is not None:
+        prev_feat = torch.zeros(B, T, 2, device=device)
+        prev_feat[:, 1:] = polar_targets[:, :-1]
+    else:
+        prev_feat = torch.zeros(B, T, 2, device=device)
+        prev_feat[:, 1:] = dxdy[:, :-1]
 
     stall_prev = torch.zeros(B, T, 1, device=device)
     stall_prev[:, 1:] = stall[:, :-1].unsqueeze(-1)
@@ -123,7 +146,17 @@ def build_input_features(dxdy, stall, mask, endpoints, conditions):
     remaining_frac = 1.0 - t_idx / lengths.clamp(min=1.0)  # (B, T)
     remaining_frac = remaining_frac.clamp(0.0, 1.0).unsqueeze(-1)  # (B, T, 1)
 
-    return torch.cat([dx_prev, stall_prev, remaining_norm, remaining_frac], dim=-1)
+    features = [prev_feat, stall_prev, remaining_norm, remaining_frac]
+
+    if velocity_guide:
+        template = _get_velocity_template(device)
+        n_bins = len(template)
+        progress = 1.0 - remaining_frac.squeeze(-1)  # (B, T), 0 at start, 1 at end
+        bin_idx = (progress * (n_bins - 1)).long().clamp(0, n_bins - 1)
+        expected_speed = template[bin_idx].unsqueeze(-1)  # (B, T, 1)
+        features.append(expected_speed)
+
+    return torch.cat(features, dim=-1)
 
 
 @torch.no_grad()
@@ -156,7 +189,7 @@ def sample_from_params(params):
     return sampled_dxdy, sampled_stall
 
 
-def train_epoch(model, loader, optimizer, gate_pw, max_len, jerk_lambda=0.0, ss_prob=0.0):
+def train_epoch(model, loader, optimizer, gate_pw, max_len, jerk_lambda=0.0, ss_prob=0.0, velocity_guide=False, polar=False):
     model.train()
     total_loss = 0.0
     total_gate = 0.0
@@ -171,7 +204,9 @@ def train_epoch(model, loader, optimizer, gate_pw, max_len, jerk_lambda=0.0, ss_
         cond = cond.to(DEVICE)
         ep = ep.to(DEVICE)
 
-        input_feat = build_input_features(dxdy, stall, mask, ep, cond)
+        polar_targets = dxdy_to_polar(dxdy, stall) if polar else None
+        target_for_loss = polar_targets if polar else dxdy
+        input_feat = build_input_features(dxdy, stall, mask, ep, cond, velocity_guide=velocity_guide, polar_targets=polar_targets)
 
         if ss_prob > 0:
             with torch.no_grad():
@@ -184,10 +219,10 @@ def train_epoch(model, loader, optimizer, gate_pw, max_len, jerk_lambda=0.0, ss_
             use_model[:, 0] = False
             mixed_dxdy = torch.where(use_model.unsqueeze(-1), s_dxdy, dxdy)
             mixed_stall = torch.where(use_model, s_stall, stall.float())
-            input_feat = build_input_features(mixed_dxdy, mixed_stall, mask, ep, cond)
+            input_feat = build_input_features(mixed_dxdy, mixed_stall, mask, ep, cond, velocity_guide=velocity_guide, polar_targets=polar_targets)
 
         params = model(input_feat, cond)
-        loss, gate_l, mdn_l = zimt_loss(params, dxdy, stall, mask, gate_pos_weight=gate_pw)
+        loss, gate_l, mdn_l = zimt_loss(params, target_for_loss, stall, mask, gate_pos_weight=gate_pw)
 
         if jerk_lambda > 0:
             jl = jerk_loss(dxdy, mask)
@@ -208,7 +243,7 @@ def train_epoch(model, loader, optimizer, gate_pw, max_len, jerk_lambda=0.0, ss_
 
 
 @torch.no_grad()
-def validate(model, loader, gate_pw, max_len):
+def validate(model, loader, gate_pw, max_len, velocity_guide=False, polar=False):
     model.eval()
     total_loss = 0.0
     total_gate = 0.0
@@ -228,10 +263,12 @@ def validate(model, loader, gate_pw, max_len):
         cond = cond.to(DEVICE)
         ep = ep.to(DEVICE)
 
-        input_feat = build_input_features(dxdy, stall, mask, ep, cond)
+        polar_targets = dxdy_to_polar(dxdy, stall) if polar else None
+        target_for_loss = polar_targets if polar else dxdy
+        input_feat = build_input_features(dxdy, stall, mask, ep, cond, velocity_guide=velocity_guide, polar_targets=polar_targets)
         params = model(input_feat, cond)
 
-        loss, gate_l, mdn_l = zimt_loss(params, dxdy, stall, mask, gate_pos_weight=gate_pw)
+        loss, gate_l, mdn_l = zimt_loss(params, target_for_loss, stall, mask, gate_pos_weight=gate_pw)
 
         gate_pred = (torch.sigmoid(params["gate_logit"]) > 0.5).float()
         valid = mask.float()
@@ -278,6 +315,10 @@ def main():
     parser.add_argument("--jerk-lambda", type=float, default=0.0)
     parser.add_argument("--ss-max", type=float, default=0.3,
                         help="Max scheduled sampling probability")
+    parser.add_argument("--velocity-guide", action="store_true",
+                        help="Add velocity template as 7th input feature")
+    parser.add_argument("--polar", action="store_true",
+                        help="Predict (speed, delta_angle) instead of (dx, dy)")
     args = parser.parse_args()
 
     signal.signal(signal.SIGINT, _handle_signal)
@@ -343,8 +384,9 @@ def main():
     )
 
     # Model
+    input_dim = 7 if args.velocity_guide else 6
     model_cfg = {
-        "input_dim": 6, "d_model": args.d_model, "n_heads": 4,
+        "input_dim": input_dim, "d_model": args.d_model, "n_heads": 4,
         "n_layers": args.n_layers, "d_ff": args.d_model * 4,
         "max_seq_len": 256, "cond_dim": 4,
         "n_components": args.n_components, "dropout": 0.1,
@@ -358,9 +400,20 @@ def main():
     start_epoch = 0
     if args.resume:
         ckpt = torch.load(args.resume, map_location="cpu", weights_only=False)
-        model.load_state_dict(ckpt["model_state_dict"])
-        start_epoch = ckpt.get("epoch", 0)
-        print(f"  Resumed from {args.resume} (epoch {start_epoch})")
+        old_dim = ckpt["config"].get("input_dim", 6)
+        if old_dim != input_dim:
+            sd = ckpt["model_state_dict"]
+            w = sd["input_proj.weight"]  # (d_model, old_dim)
+            new_w = torch.zeros(w.shape[0], input_dim)
+            new_w[:, :old_dim] = w
+            sd["input_proj.weight"] = new_w
+            model.load_state_dict(sd)
+            print(f"  Resumed from {args.resume} (epoch {ckpt.get('epoch', 0)}), "
+                  f"expanded input {old_dim} -> {input_dim}")
+        else:
+            model.load_state_dict(ckpt["model_state_dict"])
+            start_epoch = ckpt.get("epoch", 0)
+            print(f"  Resumed from {args.resume} (epoch {start_epoch})")
 
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=cfg["lr"], weight_decay=0.01,
@@ -388,23 +441,27 @@ def main():
         train_loss, train_gate, train_mdn, train_jerk = train_epoch(
             model, train_loader, optimizer, args.gate_pos_weight, cfg["max_len"],
             jerk_lambda=args.jerk_lambda, ss_prob=ss_prob,
+            velocity_guide=args.velocity_guide, polar=args.polar,
         )
         scheduler.step()
 
-        val = validate(model, val_loader, args.gate_pos_weight, cfg["max_len"])
+        val = validate(model, val_loader, args.gate_pos_weight, cfg["max_len"],
+                       velocity_guide=args.velocity_guide, polar=args.polar)
         epoch_time = time.time() - epoch_t0
 
         is_best = val["loss"] < best_val_loss
+        ckpt_data = {
+            "model_state_dict": model.state_dict(),
+            "config": model_cfg,
+            "gate_pos_weight": args.gate_pos_weight,
+            "epoch": epoch + 1,
+            "val_loss": val["loss"],
+            "phase": args.phase,
+            "polar": args.polar,
+        }
         if is_best:
             best_val_loss = val["loss"]
-            torch.save({
-                "model_state_dict": model.state_dict(),
-                "config": model_cfg,
-                "gate_pos_weight": args.gate_pos_weight,
-                "epoch": epoch + 1,
-                "val_loss": val["loss"],
-                "phase": args.phase,
-            }, TRAINING_DIR / "zimt_best.pt")
+            torch.save(ckpt_data, TRAINING_DIR / "zimt_best.pt")
 
         marker = " *BEST*" if is_best else ""
         jerk_str = f" jerk {train_jerk:.4f}" if args.jerk_lambda > 0 else ""
@@ -418,15 +475,7 @@ def main():
             f"{epoch_time:.0f}s{ss_str}{marker}"
         )
 
-        # Save latest checkpoint every epoch
-        torch.save({
-            "model_state_dict": model.state_dict(),
-            "config": model_cfg,
-            "gate_pos_weight": args.gate_pos_weight,
-            "epoch": epoch + 1,
-            "val_loss": val["loss"],
-            "phase": args.phase,
-        }, TRAINING_DIR / "zimt_latest.pt")
+        torch.save(ckpt_data, TRAINING_DIR / "zimt_latest.pt")
 
     print(f"\nDone. Best val_loss: {best_val_loss:.4f}")
     print(f"Checkpoint: {TRAINING_DIR / 'zimt_best.pt'}")
