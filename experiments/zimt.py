@@ -24,7 +24,7 @@ from models.zimt import ZIMTModel, sample_step
 _parser = argparse.ArgumentParser(add_help=False)
 _parser.add_argument("--data-dir", default=os.environ.get("DATA_DIR", "./data"))
 _parser.add_argument("--checkpoint", default=None)
-_parser.add_argument("--temperature", type=float, default=0.85)
+_parser.add_argument("--temperature", type=float, default=1.0)
 _parser.add_argument("--gate-bias", type=float, default=-1.0)
 _args, _ = _parser.parse_known_args()
 
@@ -33,8 +33,8 @@ _CKPT_PATH = (
     Path(_args.checkpoint) if _args.checkpoint
     else _DATA_DIR / "zimt_best.pt"
 )
-_TEMPERATURE = _args.temperature
-_GATE_BIAS = _args.gate_bias
+_TEMPERATURE = float(os.environ.get("ZIMT_TEMPERATURE", _args.temperature))
+_GATE_BIAS = float(os.environ.get("ZIMT_GATE_BIAS", _args.gate_bias))
 
 _DEVICE = get_device()
 _HZ = 125.0
