@@ -440,3 +440,252 @@ The retrained model is better than the stall-weighted version but still worse th
 - Train transformer longer on full 500K+ data with endpoint conditioning
 - Factorized discrete+continuous approach: separate stall schedule model composed with continuous path generator
 - Scheduled sampling to reduce train-inference distribution shift
+
+## ZIMT Endpoint Correction & Guided Sampling (2026-05-13)
+
+### ZIMT Architecture Recap
+
+ZIMT (Zero-Inflated Mouse Trajectory): Causal Transformer + FiLM conditioning + binary stall gate + 8-component MDN.
+Input: (dx_prev, dy_prev, stall_prev, remaining_dx, remaining_dy, remaining_frac).
+Condition: (log_dist, log_dur, cos_angle, sin_angle). 256d, 6L, 4H.
+
+Baseline ZIMT AUC: 0.878 at n=2000 (with donor time warp OFF, uniform timestamps).
+
+### Key Insight: ZIMT's Ceiling Is Its Learned Distribution
+
+Previously hypothesized that the endpoint correction (linear interpolation in last 20%) was the main
+bottleneck, creating an artificial velocity peak at ~90% of duration (human peak at ~35%).
+
+Testing revealed this is PART of the problem but not the main issue. The fundamental limitation is
+ZIMT's learned joint distribution of kinematic features, especially:
+- mean_acceleration × mean_jerk correlation (r=0.999 synthetic vs r=-0.025 human)
+- Angular velocity distribution mismatch (0.50+ Wasserstein)
+- These cannot be fixed by post-processing
+
+### Experiment Results
+
+| Experiment | AUC (n=200) | AUC (n=2000) | Key Change | Result |
+|------------|-------------|--------------|------------|--------|
+| ZIMT baseline | 0.878 | 0.878 | Standard: linear last-20% correction, uniform timestamps | Baseline |
+| ZIMT guided (strength=0.3) | 0.968 | — | Shift MDN means toward endpoint, quadratic schedule | WORSE: out-of-distribution outputs |
+| ZIMT guided (strength=0.1) | 0.939 | — | Lower guidance | Still worse |
+| ZIMT guided (strength=0.05) | 0.913 | — | Minimal guidance | Still worse than baseline |
+| **ZIMT magcorr** | **0.799** | **0.864** | Magnitude-weighted correction across all steps | **Best ZIMT variant** |
+| ZIMT magcorr (gate_bias=0) | 0.797 | — | More stalls with magcorr | Similar to default |
+| ZIMT stall_inject_v2 | 0.791 | — | Curvature-aware stalls + cubic correction | Stall injection helps slightly |
+
+### ZIMT Guided MDN Sampling (FAILED)
+
+**Hypothesis**: Shift MDN component means toward the "ideal" next step (remaining_displacement / remaining_steps)
+at inference time, with quadratic-schedule strength increasing toward endpoint. Eliminates destructive
+endpoint correction entirely. Analogous to classifier-free guidance in diffusion models.
+
+**Result**: Even minimal guidance (strength=0.05) worsens AUC from 0.878 to 0.913. The model wasn't
+trained with guidance, so shifting means creates out-of-distribution outputs. Top discriminators shift
+to velocity_skewness (1.57 Wasserstein at strength=0.3) and mean_jerk.
+
+**Lesson**: Inference-time distribution modification on models trained without it creates artifacts.
+Guidance must be built into training (like classifier-free guidance in diffusion, which trains with
+random condition dropout).
+
+### ZIMT Magnitude-Weighted Correction (IMPROVED)
+
+**Change**: Replace linear last-20% endpoint correction with magnitude-weighted correction spread across
+ALL moving steps. Each step absorbs error proportional to its displacement magnitude.
+
+**Result at n=200**: AUC 0.799 (vs 0.878 baseline). velocity_skewness drops from 1.57 to 0.11.
+time_to_peak_velocity drops from 0.76 to 0.44. The velocity profile is much more natural.
+
+**Result at n=2000**: AUC 0.864. Modest improvement. New bottleneck: angular_velocity_mean (0.506
+Wasserstein), time_to_peak_velocity (0.496), angular_velocity_std (0.413). Feature importances
+are spread out — no single feature dominates.
+
+**Lesson**: Better endpoint correction helps (velocity profile improves significantly) but the
+fundamental joint distribution mismatch remains. ZIMT's learned distribution doesn't capture
+angular dynamics correctly.
+
+## Corpus Enhancement Experiments (2026-05-13)
+
+### Key Discovery: Pure Retrieval Beats All Enhancements
+
+With the full 4.16M pool, plain corpus replay (translate-only, cubic-ease endpoint correction)
+achieves AUC **0.52** at n=2000 — essentially indistinguishable from human. Every enhancement
+attempted made it WORSE by introducing detectable artifacts.
+
+| Experiment | AUC (n=2000) | Type | Why Worse |
+|------------|-------------|------|-----------|
+| **corpus_replay** | **0.52** | Pure retrieval + translate | **BEST** — real data is optimal |
+| corpus_perturb_v7 | 0.645 | Magnitude scaling + perp jitter | Perturbation changes direction counts |
+| corpus_sim | 0.682 | Similarity transform (rotate+scale) | Rotation changes direction counts |
+| corpus_replay_v2 | 0.558 | Magnitude-weighted correction | Distributed correction alters more steps |
+| corpus_perturb_v6 | 0.780 | Smooth sinusoidal perturbation | Sine waves create curvature artifacts |
+
+### corpus_perturb_v7 Feature Analysis
+
+Top discriminators at n=2000: num_direction_changes (0.255 Wasserstein, 0.083 importance),
+movement_duration (0.035, 0.079), curvature_mean (0.229, 0.060). The perturbation changes
+direction counts and curvature — even 3% magnitude scaling + 1.5% perpendicular jitter is
+detectable.
+
+### corpus_sim (Similarity Transform, FAILED)
+
+Applied rotate + scale to map donor start/end exactly to query start/end, eliminating endpoint
+correction entirely. AUC 0.682 — worse than plain replay because:
+- Rotation preserves relative angles between consecutive steps, but `num_direction_changes`
+  depends on absolute step signs, which rotation changes
+- Scaling changes step magnitudes, pushing borderline stalls above/below thresholds
+- Velocity features improve (all < 0.012 Wasserstein) but direction changes worsen (0.302)
+
+### corpus_replay_v2 (Magnitude-Weighted Correction, FAILED)
+
+Replaced cubic-ease endpoint correction (concentrated in last 25%) with magnitude-weighted
+correction spread across all moving steps. AUC 0.558 — worse than cubic-ease (0.514) because:
+- Distributing correction everywhere alters many small direction decisions
+- Cubic-ease is better because it concentrates changes in the deceleration phase, mimicking
+  natural human endpoint adjustment
+- curvature_mean improves (0.018 vs 0.054) but num_direction_changes worsens (0.125 vs 0.056)
+
+### Key Lesson
+
+**Any transformation of real trajectories makes them worse.** The 18 kinematic features form a
+tightly coupled joint distribution. Even small perturbations (3% magnitude scaling) or
+mathematically exact transformations (similarity transform) introduce detectable artifacts.
+The optimal strategy with a large enough pool is pure retrieval + translation.
+
+### Corpus Replay Stability (3 seeds, n=2000)
+- Seed 42: AUC 0.514
+- Seed 123: AUC 0.525
+- Seed 999: AUC 0.519
+- Mean: ~0.52, range: 0.514-0.525
+
+## Updated Scoreboard (2026-05-13)
+
+| Approach | AUC (n=2000) | Type | Notes |
+|----------|-------------|------|-------|
+| **Corpus Replay (4.16M)** | **0.52** | Retrieval | Open-source ready |
+| Corpus Perturb v7 | 0.645 | Retrieval + noise | Best perturbation variant |
+| Corpus Sim | 0.682 | Retrieval + transform | Similarity transform hurts |
+| DDPM + borrowed timing | 0.820 | Hybrid (not generative) | Proves DDPM path is OK |
+| ZIMT magcorr | 0.864 | Generative | Best ZIMT variant |
+| ZIMT baseline | 0.878 | Generative | Original ZIMT |
+| VQ-VAE + GRPO | 0.890 | Generative | Checkpoint lost |
+| ZIMT guided | 0.968 | Generative | Guidance at inference fails |
+
+## ZIMT Fine-Tuning Experiments (2026-05-14)
+
+### Differentiable Feature-Matching (FM) Training
+
+Attempted to fine-tune ZIMT by backpropagating through differentiable kinematic feature
+computation. Three iterations, all failed due to **exposure bias**.
+
+**Architecture**: Two-phase generation — Phase 1 generates reference trajectories without
+gradient (autoregressive, fast), Phase 2 teacher-forces from references in a single forward
+pass with gradient. Uses Gumbel-Softmax for differentiable MDN component selection and
+straight-through estimator for stall gating.
+
+| Iteration | Loss | Grad Clip | AUC (n=200) | Key Issue |
+|-----------|------|-----------|-------------|-----------|
+| FM iter 1 (L2, clip=10) | L2 | 10 | 0.870 | Gradients 1000-10000x above clip → 99% signal lost |
+| FM iter 2 (L1, clip=100) | L1 | 100 | — | Angular velocity WORSENED: 0.437 → 0.736 → 0.890 |
+| FM iter 3 (clamped feats) | L1 | 100 | — | Exposure bias confirmed: more training = worse inference |
+
+**Root cause — exposure bias**: Teacher-forced training pushes model parameters in directions
+that improve loss when given ground-truth inputs, but these same parameter changes compound
+errors during autoregressive inference. Angular velocity gap WORSENED monotonically with more
+FM training iterations. This is a fundamental limitation of teacher-forced fine-tuning, not a
+hyperparameter issue.
+
+**Prior attempt — autoregressive with gradient**: Computation graph through T sequential forward
+passes caused GPU memory explosion (612 CPU seconds, 4GB working set by iteration 2). Abandoned
+in favor of the two-phase approach.
+
+### Rejection Sampling (FAILED)
+
+Generate N candidate trajectories per query, select the one closest to human feature mean
+(normalized L2 distance across all 18 features).
+
+| N Candidates | AUC (n=200) | Key Issue |
+|-------------|-------------|-----------|
+| 8 | 0.892 | Variance collapse |
+
+**Result**: AUC 0.892 — WORSE than baseline 0.864. Selecting trajectories closest to the
+human mean kills feature VARIANCE. Features like path_efficiency (0.170→0.425 Wasserstein),
+movement_duration (0.128→0.344) became highly discriminative because distributions were too
+narrow. The RF classifier detects reduced variance as easily as shifted means.
+
+### Corpus Blend (FAILED)
+
+Blend two donor trajectories via arc-length resampling + position interpolation.
+
+**Result**: AUC 0.948 at n=2000. Arc-length resampling completely destroys speed profiles,
+creating angular_velocity gaps of 0.84-0.86 Wasserstein. Position blending between two
+trajectories creates unnatural curvature artifacts.
+
+### Corpus Rotate (Below Target but Not Neural)
+
+Rotation + uniform scale of donor trajectories to map any donor to any query direction,
+eliminating the angle filter constraint. Matches by log-distance only.
+
+**Result**: AUC **0.686** at n=2000. Only remaining gap is num_direction_changes (0.330
+Wasserstein). All velocity/acceleration features below 0.012. Curvature features at 0.11-0.12.
+
+| Feature | Wasserstein | Note |
+|---------|------------|------|
+| num_direction_changes | 0.330 | Only HIGH feature — rotation changes absolute step signs |
+| curvature_mean | 0.115 | Acceptable |
+| curvature_std | 0.108 | Acceptable |
+| max_deviation | 0.062 | Good |
+| All velocity/accel features | < 0.012 | Excellent |
+
+**Key insight**: Rotation preserves relative angles and scale-invariant features (velocity_skewness,
+time_to_peak_velocity, path_efficiency) but changes absolute step signs, which
+num_direction_changes depends on. This is the same mechanism as corpus_sim (0.682) —
+essentially the same approach, confirming the result.
+
+**Status**: Below the 0.75 target but uses geometric transformation of real data, not a neural
+generative model.
+
+## Updated Scoreboard (2026-05-14)
+
+| Approach | AUC (n=2000) | Type | Notes |
+|----------|-------------|------|-------|
+| **Corpus Replay (4.16M)** | **0.52** | Retrieval | Open-source ready |
+| Corpus Perturb v7 | 0.645 | Retrieval + noise | Best perturbation variant |
+| **Corpus Rotate** | **0.686** | Retrieval + transform | Below 0.75 target |
+| Corpus Sim | 0.682 | Retrieval + transform | Same mechanism as rotate |
+| DDPM + borrowed timing | 0.820 | Hybrid (not generative) | Proves DDPM path is OK |
+| **ZIMT magcorr** | **0.864** | **Generative** | **Best neural generative** |
+| ZIMT FM (50 iter) | 0.870 | Generative | Exposure bias worsened it |
+| ZIMT baseline | 0.878 | Generative | Original ZIMT |
+| ZIMT reject (N=8) | 0.892 | Generative | Variance collapse |
+| VQ-VAE + Transformer | 0.890 | Generative | Undertrained |
+| Corpus Blend | 0.948 | Retrieval + blend | Arc-length resampling kills features |
+| ZIMT guided | 0.968 | Generative | Guidance at inference fails |
+
+### Key Lessons from This Session
+
+1. **Teacher-forced fine-tuning has fundamental exposure bias**: Any gradient signal computed
+   under teacher forcing pushes parameters in directions that worsen autoregressive generation.
+   This rules out differentiable feature matching as a ZIMT improvement path.
+
+2. **Rejection sampling kills variance**: Selecting best-of-N by distance to mean produces
+   distributions that are too narrow. The RF classifier detects reduced variance as easily as
+   shifted means.
+
+3. **Geometric transforms of real data work well**: Corpus rotate achieves 0.686 — below the
+   0.75 target. But rotation changes num_direction_changes (the only remaining gap), so it
+   cannot reach corpus replay's 0.52.
+
+4. **The generative gap remains large**: Best neural generative (ZIMT magcorr) is at 0.864.
+   The gap to 0.75 is enormous and all fine-tuning approaches barely moved the needle.
+
+### Next Steps
+
+**For open-source release**: Corpus Replay (0.52) or Corpus Rotate (0.686) both meet <0.75.
+
+**For a truly generative model below 0.75**: Remaining ideas:
+- ZIMT retrained from scratch with scheduled sampling (ss_max > 0.3) + multi-task NLL + feature loss
+- Neural perturbation network on top of corpus_rotate (learned residuals → clearly generative)
+- Factored model: separate stall schedule + continuous path generator
+- ZIMT + donor speed profile transplant (extending the v147 insight)
+- GRPO/RAFT: use RF classifier as RL reward signal

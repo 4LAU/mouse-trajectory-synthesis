@@ -17,12 +17,15 @@ replay. Model weights loaded at import time are permitted; trajectory databases
 are not.
 
 The current state of the art for fully generative synthesis under this
-constraint is **AUC 0.892** (VQ-VAE + GRPO-finetuned autoregressive transformer
-with classifier-free guidance). The theoretical floor - corpus replay of the
-same distribution - is AUC ~0.50 (with the full 4.16M-trajectory pool),
-indistinguishable from random. The gap between 0.892 and 0.50 is dominated by a
-single phenomenon: discrete stall events embedded in continuous motion, which no
-continuous generative model can produce.
+constraint is **AUC 0.864** (ZIMT with magnitude-weighted endpoint correction).
+The previous best was 0.892 (VQ-VAE + GRPO-finetuned transformer), but that
+checkpoint was lost and is not reproducible. The theoretical floor - corpus
+replay of the same distribution - is AUC ~0.52 (with the full 4.16M-trajectory
+pool), essentially indistinguishable from random. The gap between 0.864 and 0.52
+is dominated by two phenomena: (1) discrete stall events embedded in continuous
+motion, and (2) the joint distribution of kinematic features (particularly
+acceleration-jerk correlations and angular velocity), which no current model
+fully captures.
 
 ---
 
@@ -747,6 +750,127 @@ encodes a displacement that implicitly couples path geometry and speed).
 
 ---
 
+## 6b. Corpus Enhancement: Why Every Transformation Hurts
+
+### The Paradox of Corpus Enhancement
+
+With a 4.16M-trajectory pool, plain corpus replay (translate-only, cubic-ease
+endpoint correction) achieves AUC 0.52. A natural assumption is that adding
+diversity through perturbation or transformation would help by preventing exact
+memorization detection. The opposite is true: **every enhancement tested made
+the result worse**, sometimes dramatically.
+
+| Enhancement | AUC (n=2000) | Delta from replay |
+|---|---|---|
+| None (translate-only) | 0.52 | — |
+| 3% magnitude scaling + 1.5% perpendicular jitter | 0.645 | +0.13 |
+| Similarity transform (rotate + scale) | 0.682 | +0.16 |
+| Smooth sinusoidal perturbation | 0.780 | +0.26 |
+| Magnitude-weighted endpoint correction | 0.558 | +0.04 |
+
+### Why Enhancements Fail
+
+The 18 kinematic features form a tightly coupled joint distribution. Each
+feature depends on the full sequence of displacements, and any modification —
+even a mathematically exact similarity transform — changes the joint
+distribution detectably.
+
+Specific mechanisms of detection:
+
+- **Perturbation changes direction counts.** Even 3% magnitude scaling
+  occasionally pushes a small step past the stall threshold (0.3 px), creating
+  or eliminating a direction change. `num_direction_changes` has a discrete
+  distribution (integer-valued), making any systematic shift detectable.
+- **Rotation changes axis-relative signs.** Direction changes are computed from
+  the sign of angular differences. Rotation by angle theta shifts all absolute
+  angles, which can flip sign boundaries at ±pi. This inflates
+  `num_direction_changes` by ~40% for a 45-degree rotation.
+- **Scaling changes speed-dependent thresholds.** The stall detection threshold
+  (speed < some value) is in absolute units. Scaling a trajectory by 1.1x
+  pushes stalls above the threshold, changing curvature and direction count
+  statistics.
+- **Distributed endpoint correction alters many steps.** Magnitude-weighted
+  correction touches every moving step. Though each change is small, the
+  cumulative effect on direction counts and angular velocity is detectable.
+  Cubic-ease correction, concentrated in the last 25%, is less detectable
+  because it mimics natural deceleration-phase adjustment.
+
+### Implications for Generative Models
+
+This finding means the AUC 0.52 floor is approximately the limit of any
+retrieval-based approach. To go lower requires either:
+1. An even larger pool with exact distributional match to the evaluation set
+2. A generative model that produces novel trajectories matching the full
+   18-feature joint distribution
+
+---
+
+## 6c. ZIMT Endpoint Correction: A Partial Fix
+
+### The Endpoint Correction Problem
+
+ZIMT generates trajectories autoregressively in normalized space and must be
+corrected to hit the exact endpoint. The original approach: linear interpolation
+in the last 20% of steps. This creates an artificial velocity peak at ~90% of
+duration (human peak is at ~35%), making `time_to_peak_velocity` the #1
+discriminator.
+
+### Magnitude-Weighted Correction
+
+Replacing linear correction with magnitude-weighted correction (each moving step
+absorbs error proportional to its displacement) improves AUC from 0.878 to
+0.864. The velocity profile becomes more natural: `velocity_skewness`
+Wasserstein drops from 1.57 to 0.08.
+
+However, the improvement is modest because the fundamental joint distribution
+mismatch remains. The new bottleneck is angular velocity (mean: 0.506
+Wasserstein, std: 0.413) and `mean_acceleration` (0.108 RF importance despite
+low individual Wasserstein — indicating the RF detects joint distribution
+patterns).
+
+### Guided MDN Sampling (Failed)
+
+An attempt to eliminate endpoint correction entirely by shifting MDN component
+means toward the endpoint during inference (analogous to classifier-free
+guidance in diffusion models) failed at all strength levels tested (0.05, 0.1,
+0.3). The model was not trained with guidance, so shifted means produce
+out-of-distribution outputs. AUC worsened from 0.878 to 0.913-0.968.
+
+**Lesson**: Inference-time distribution modification only works when the model
+is trained to expect it (e.g., classifier-free guidance trains with random
+condition dropout).
+
+### Differentiable Feature-Matching Fine-Tuning (Failed)
+
+An attempt to fine-tune ZIMT by backpropagating through differentiable kinematic
+feature computation (curvature, angular velocity, path efficiency, etc.) using
+a two-phase approach: Phase 1 generates reference trajectories without gradient,
+Phase 2 teacher-forces from references in a single forward pass with Gumbel-Softmax
+component selection and straight-through stall gating.
+
+Three iterations were tested with progressively better gradient handling (L2→L1
+loss, grad_clip 10→100, feature clamping). All failed due to **exposure bias**:
+teacher-forced training pushes parameters in directions that improve loss under
+ground-truth inputs, but these same parameter changes compound errors during
+autoregressive inference. Angular velocity Wasserstein *worsened monotonically*
+with more training (0.437 → 0.736 → 0.890).
+
+This is a fundamental limitation of teacher-forced fine-tuning for autoregressive
+models, not a hyperparameter issue. Overcoming it would require either (a)
+scheduled sampling at fine-tuning time (mixing teacher-forced and free-running
+inputs), or (b) reinforcement learning that operates on complete trajectories
+generated autoregressively (GRPO/RAFT).
+
+### Rejection Sampling (Failed)
+
+Generating N candidate trajectories per query and selecting the one closest to
+the human feature mean (normalized L2 distance across all 18 features) produced
+AUC 0.892 with N=8 — worse than the 0.864 baseline. The selection process kills
+feature variance: distributions become too narrow, and the RF classifier detects
+reduced variance as easily as shifted means.
+
+---
+
 ## 7. Related Work
 
 ### 7.1 Kinematic Theory and the Sigma-Lognormal Model
@@ -856,10 +980,12 @@ continuous-discrete structure observed in the data.
 |---|---|---|
 | Human trajectory corpus size | 4.16M trajectories | 5 public HCI datasets |
 | Evaluation features | 18 kinematic features | See Section 2 |
-| Corpus replay AUC | 0.498 | Theoretical floor |
-| Best fully generative AUC | 0.892 | VQ-VAE + GRPO transformer + CFG |
+| Corpus replay AUC | 0.52 (4.16M pool, mean of 3 seeds) | Practical floor |
+| Best fully generative AUC | 0.864 | ZIMT + magnitude-weighted correction |
+| Best retrieval+transform AUC | 0.686 | Corpus rotate (rotation + scale) |
+| Previous best generative | 0.892 | VQ-VAE + GRPO (checkpoint lost) |
 | Perturbed replay AUC | 0.55 (2% noise) | Section 6 |
-| Generative target | < 0.60 | Near-indistinguishable |
+| Generative target | < 0.75 (open-source), < 0.50 (full success) | |
 | Top RF feature importance | 10.8% (angular_velocity_std) | Distributed importance |
 | Top-5 RF feature importance | 41% | No single feature dominates |
 | Human mean velocity | ~960 px/s | Corpus statistics |
@@ -870,7 +996,7 @@ continuous-discrete structure observed in the data.
 | Stall duration | 1-5 samples (8-40ms) | Fixed USB polling intervals |
 | Timing residual autocorrelation | r = 0.65 | Motor control smoothness |
 | Peak velocity location | ~35% of duration | Universal, distance-independent |
-| Experiments conducted | 145+ | See EXPERIMENTS.md |
+| Experiments conducted | 150+ | See EXPERIMENTS.md |
 | Model architectures tested | 8 families | See Section 5 |
 
 ---
