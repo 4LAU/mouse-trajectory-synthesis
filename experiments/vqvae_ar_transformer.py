@@ -38,13 +38,14 @@ _parser.add_argument("--transformer-checkpoint", default=None)
 _args, _ = _parser.parse_known_args()
 
 _DATA_DIR = Path(_args.data_dir)
+_TRAINING_DIR = Path("training")
 _VQVAE_PATH = (
     Path(_args.vqvae_checkpoint) if _args.vqvae_checkpoint
-    else _DATA_DIR / "vqvae_best.pt"
+    else _TRAINING_DIR / "vqvae_v2_best.pt"
 )
 _TF_PATH = (
     Path(_args.transformer_checkpoint) if _args.transformer_checkpoint
-    else _DATA_DIR / "trajectory_transformer_best.pt"
+    else _TRAINING_DIR / "trajectory_transformer_best.pt"
 )
 
 _DEVICE = get_device()
@@ -89,7 +90,7 @@ _transformer = TrajectoryTransformer(
     max_seq_len=_tf_cfg["max_seq_len"],
     cond_dim=_tf_cfg["cond_dim"],
 ).to(_DEVICE)
-_transformer.load_state_dict(_tf_ckpt["model_state_dict"], strict=False)
+_transformer.load_state_dict(_tf_ckpt["model_state_dict"])
 _transformer.train(False)
 
 _MAX_SEQ = _tf_cfg["max_seq_len"]
@@ -151,11 +152,13 @@ def generate_path(
     n_target = max(5, int(round(total_duration * _HZ)))
     n_target = min(n_target, _MAX_SEQ - 2)
 
-    expected_speed = total_dist / total_duration
-    expected_dx = cos_a * expected_speed * _DT * 0.8
-    expected_dy = sin_a * expected_speed * _DT * 0.8
+    # Compute starting token in unit-normalized space
+    # Mean displacement per step ≈ 1/n_target in the direction of travel
+    mean_step = 1.0 / n_target
+    expected_dx_norm = cos_a * mean_step * 0.8
+    expected_dy_norm = sin_a * mean_step * 0.8
     start_dxdy = np.clip(
-        np.array([[expected_dx, expected_dy]], dtype=np.float32),
+        np.array([[expected_dx_norm, expected_dy_norm]], dtype=np.float32),
         _clip_lo, _clip_hi,
     )
     start_normed = (start_dxdy - _norm_mean) / _norm_std
@@ -176,8 +179,8 @@ def generate_path(
                 tdx, tdy = _TOKEN_DXDY.get(int(tok), (0.0, 0.0))
                 _cum_dx += tdx
                 _cum_dy += tdy
-                ep_info[0, t, 0] = (dx_total - _cum_dx) / max(total_dist, 1.0)
-                ep_info[0, t, 1] = (dy_total - _cum_dy) / max(total_dist, 1.0)
+                ep_info[0, t, 0] = cos_a - _cum_dx
+                ep_info[0, t, 1] = sin_a - _cum_dy
                 ep_info[0, t, 2] = 1.0 - (t + 1) / n_target
 
             if _CFG_SCALE > 1.0:
@@ -213,12 +216,13 @@ def generate_path(
 
     token_seq = generated[0].cpu().numpy()
 
+    # Build positions: scale from unit-normalized to pixel space
     positions = [(start_x, start_y)]
     cx, cy = start_x, start_y
     for tok in token_seq:
         dx, dy = _TOKEN_DXDY.get(int(tok), (0.0, 0.0))
-        cx += dx
-        cy += dy
+        cx += dx * total_dist
+        cy += dy * total_dist
         positions.append((cx, cy))
 
     # Endpoint correction: scale final 20%

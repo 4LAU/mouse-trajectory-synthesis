@@ -59,11 +59,28 @@ _MAX_SEQ = _cfg["max_seq_len"]
 _USE_VELOCITY_GUIDE = _cfg.get("input_dim", 6) == 7
 _POLAR = _ckpt.get("polar", False)
 
+_TIME_WARP = os.environ.get("ZIMT_TIME_WARP", "donor")  # "off", "template", "donor"
+_WARP_TEMPLATE = np.load(_DATA_DIR / "velocity_template.npy")
+
 _VELOCITY_TEMPLATE = None
 if _USE_VELOCITY_GUIDE:
-    _VELOCITY_TEMPLATE = torch.from_numpy(
-        np.load(_DATA_DIR / "velocity_template.npy")
-    ).float().to(_DEVICE)
+    _VELOCITY_TEMPLATE = torch.from_numpy(_WARP_TEMPLATE).float().to(_DEVICE)
+
+# Load pool for donor velocity profiles
+_DONOR_POOL = None
+if _TIME_WARP == "donor":
+    _pool_offsets_path = Path("training/full_pool_offsets.npy")
+    if _pool_offsets_path.exists():
+        _DONOR_OFFSETS = np.load("training/full_pool_offsets.npy")
+        _DONOR_META = np.load("training/full_pool_meta.npy")
+        _DONOR_FLAT = np.load("training/pool_flat_i16.npy", mmap_mode="r")
+        _DONOR_T = np.load("training/pool_t_rel_f32.npy", mmap_mode="r")
+        _DONOR_LOG_DIST = _DONOR_META[:, 0]
+        _DONOR_POOL = True
+        print(f"[zimt] Donor pool: {len(_DONOR_OFFSETS)-1:,} trajectories")
+    else:
+        print("[zimt] No donor pool found, falling back to uniform timestamps")
+        _TIME_WARP = "off"
 
 _mode = "polar" if _POLAR else f"{_cfg.get('input_dim', 6)}d"
 print(
@@ -73,6 +90,71 @@ print(
     f"val_loss={_ckpt.get('val_loss', 0):.4f}, "
     f"phase={_ckpt.get('phase', '?')}"
 )
+
+
+_donor_rng = np.random.default_rng()
+
+
+def _get_donor_velocity_profile(log_dist, n_output_bins):
+    """Sample a real trajectory with similar distance from the pool, return its velocity profile."""
+    dist_diff = np.abs(_DONOR_LOG_DIST - log_dist)
+    candidates = np.where(dist_diff < 0.3)[0]
+    if len(candidates) < 10:
+        candidates = np.where(dist_diff < 1.0)[0]
+    if len(candidates) < 5:
+        candidates = np.arange(len(_DONOR_LOG_DIST))
+
+    chosen = candidates[_donor_rng.integers(0, len(candidates))]
+    lo, hi = int(_DONOR_OFFSETS[chosen]), int(_DONOR_OFFSETS[chosen + 1])
+    xy = np.array(_DONOR_FLAT[lo:hi], dtype=np.float64)
+
+    if len(xy) < 3:
+        return _WARP_TEMPLATE
+
+    diffs = np.diff(xy, axis=0)
+    speeds = np.sqrt((diffs ** 2).sum(axis=1))
+
+    # Resample to n_output_bins
+    profile = np.interp(
+        np.linspace(0, 1, n_output_bins),
+        np.linspace(0, 1, len(speeds)),
+        speeds,
+    )
+    total = profile.sum()
+    if total < 1e-8:
+        return _WARP_TEMPLATE
+    return profile / total
+
+
+def _time_warp_timestamps(positions, total_duration, velocity_profile=None):
+    """Redistribute timestamps so velocity profile matches the given profile."""
+    n = len(positions)
+    step_dists = []
+    for i in range(1, n):
+        dx = positions[i][0] - positions[i - 1][0]
+        dy = positions[i][1] - positions[i - 1][1]
+        step_dists.append(math.hypot(dx, dy))
+
+    profile = velocity_profile if velocity_profile is not None else _WARP_TEMPLATE
+    n_bins = len(profile)
+    target_dt = []
+    for i in range(len(step_dists)):
+        progress = i / max(len(step_dists) - 1, 1)
+        bin_idx = min(int(progress * (n_bins - 1)), n_bins - 1)
+        target_speed = max(profile[bin_idx], 1e-6)
+        target_dt.append(step_dists[i] / target_speed)
+
+    dt_sum = sum(target_dt)
+    if dt_sum < 1e-8:
+        return [i * (total_duration / max(n - 1, 1)) for i in range(n)]
+
+    timestamps = [0.0]
+    cum = 0.0
+    for dt in target_dt:
+        cum += dt
+        timestamps.append(total_duration * cum / dt_sum)
+
+    return timestamps
 
 
 # ---------------------------------------------------------------------------
@@ -185,8 +267,16 @@ def generate_path(
         px, py = positions[idx]
         positions[idx] = (px + err_x * frac, py + err_y * frac)
 
+    if _TIME_WARP == "donor" and _DONOR_POOL and n > 3:
+        donor_profile = _get_donor_velocity_profile(log_dist, n - 1)
+        timestamps = _time_warp_timestamps(positions, total_duration, velocity_profile=donor_profile)
+    elif _TIME_WARP == "template" and n > 3:
+        timestamps = _time_warp_timestamps(positions, total_duration)
+    else:
+        timestamps = [i * _DT for i in range(n)]
+
     result = [
-        (float(positions[i][0]), float(positions[i][1]), i * _DT)
+        (float(positions[i][0]), float(positions[i][1]), timestamps[i])
         for i in range(n)
     ]
     result[0] = (start_x, start_y, 0.0)

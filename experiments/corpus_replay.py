@@ -33,29 +33,42 @@ _args, _ = _parser.parse_known_args()
 _DATA_DIR = Path(_args.data_dir)
 
 # ---------------------------------------------------------------------------
-# Load demo pool
+# Load pool — full (4.16M from training/) or demo (50K from data/)
 # ---------------------------------------------------------------------------
-_pool = np.load(_DATA_DIR / "demo_pool.npz", allow_pickle=False)
-_flat = _pool["flat"]        # (total_pts, 2) float coords
-_offsets = _pool["offsets"]   # (N+1,) trajectory boundaries
-_meta = _pool["meta"]        # (N, 3) columns: log_dist, cos_angle, sin_angle
-_t = _pool["t"]              # (total_pts,) timestamps
+_POOL_DIR = Path(os.environ.get("POOL_DIR", ""))
+_full_pool_path = _POOL_DIR / "full_pool_offsets.npy" if _POOL_DIR.name else Path("training/full_pool_offsets.npy")
+
+if _full_pool_path.exists():
+    _pool_dir = _full_pool_path.parent
+    _offsets = np.load(_pool_dir / "full_pool_offsets.npy")
+    _meta = np.load(_pool_dir / "full_pool_meta.npy")
+    _flat = np.load(_pool_dir / "pool_flat_i16.npy", mmap_mode="r")
+    _t = np.load(_pool_dir / "pool_t_rel_f32.npy", mmap_mode="r")
+    _flat_is_int16 = True
+    _pool_source = f"full pool ({len(_offsets)-1:,} trajectories)"
+else:
+    _pool = np.load(_DATA_DIR / "demo_pool.npz", allow_pickle=False)
+    _flat = _pool["flat"]
+    _offsets = _pool["offsets"]
+    _meta = _pool["meta"]
+    _t = _pool["t"]
+    _flat_is_int16 = False
+    _pool_source = f"demo pool ({len(_offsets)-1:,} trajectories)"
 
 _N = len(_offsets) - 1
 _pool_log_dist = _meta[:, 0]
-_pool_angles = np.arctan2(_meta[:, 2], _meta[:, 1])  # (N,) in (-pi, pi]
+_pool_angles = np.arctan2(_meta[:, 2], _meta[:, 1])
 
-# Pre-compute displacement vectors for endpoint-proximity ranking
 _pool_dist = np.exp(_pool_log_dist)
-_pool_dx = _pool_dist * _meta[:, 1]  # dist * cos(angle)
-_pool_dy = _pool_dist * _meta[:, 2]  # dist * sin(angle)
+_pool_dx = _pool_dist * _meta[:, 1]
+_pool_dy = _pool_dist * _meta[:, 2]
 
-_ANGLE_THRESH = math.pi / 3   # +/-60 degrees
-_DIST_THRESH = 0.5             # +/-0.5 in log-space
-_ENDPOINT_K = 3                # top-K for diversity
+_ANGLE_THRESH = math.pi / 3
+_DIST_THRESH = 0.5
+_ENDPOINT_K = 3
 _rng = np.random.default_rng()
 
-print(f"[corpus_replay] Demo pool: {_N} trajectories")
+print(f"[corpus_replay] {_pool_source}")
 
 
 # ---------------------------------------------------------------------------
@@ -113,14 +126,14 @@ def generate_path(
 
     # Extract trajectory
     lo, hi = int(_offsets[chosen]), int(_offsets[chosen + 1])
-    xy = _flat[lo:hi]
-    t_abs = _t[lo:hi]
+    xy = np.array(_flat[lo:hi], dtype=np.float64)
+    t_abs = np.array(_t[lo:hi], dtype=np.float64)
 
     # Translate so trajectory starts at (start_x, start_y)
-    shift_x = start_x - float(xy[0, 0])
-    shift_y = start_y - float(xy[0, 1])
-    out_x = xy[:, 0].astype(float) + shift_x
-    out_y = xy[:, 1].astype(float) + shift_y
+    shift_x = start_x - xy[0, 0]
+    shift_y = start_y - xy[0, 1]
+    out_x = xy[:, 0] + shift_x
+    out_y = xy[:, 1] + shift_y
 
     n_pts = hi - lo
     result = [(float(out_x[i]), float(out_y[i]), float(t_abs[i])) for i in range(n_pts)]
