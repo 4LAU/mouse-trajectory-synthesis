@@ -679,13 +679,168 @@ generative model.
 4. **The generative gap remains large**: Best neural generative (ZIMT magcorr) is at 0.864.
    The gap to 0.75 is enormous and all fine-tuning approaches barely moved the needle.
 
-### Next Steps
+## Proposed Generative Architectures (2026-05-15)
 
-**For open-source release**: Corpus Replay (0.52) or Corpus Rotate (0.686) both meet <0.75.
+Literature review across handwriting synthesis, speech/audio generation, robotics, and motion
+capture identified 9 novel approaches not yet attempted. Ranked by how directly they address
+our two known root causes: (1) the stall representation gap (6% of human timesteps are exact
+zero displacement — no continuous model produces this), and (2) exposure bias in autoregressive
+training (teacher-forced fine-tuning worsens free-running inference).
 
-**For a truly generative model below 0.75**: Remaining ideas:
-- ZIMT retrained from scratch with scheduled sampling (ss_max > 0.3) + multi-task NLL + feature loss
-- Neural perturbation network on top of corpus_rotate (learned residuals → clearly generative)
-- Factored model: separate stall schedule + continuous path generator
-- ZIMT + donor speed profile transplant (extending the v147 insight)
-- GRPO/RAFT: use RF classifier as RL reward signal
+### Tier 1 — Directly addresses a known root cause
+
+**1. Hybrid Discrete-Continuous Diffusion (CANDI-style)**
+
+Ref: CANDI (arXiv 2510.22510), CDTD (arXiv 2312.10431), MissHDD (arXiv 2511.14543)
+
+Runs two coupled processes in a single denoiser: discrete masking for stall/no-stall decisions,
+continuous Gaussian diffusion for (dx, dy) displacement. The discrete channel assigns real
+probability mass to exact-zero events; the continuous channel handles smooth kinematics. One
+shared neural network learns the coupling between stall decisions and surrounding motion
+(deceleration ramps, heading changes at stall boundaries).
+
+- **Why novel vs. what we tried**: Our DDPM/CFM kept everything continuous (can't produce exact
+  zeros). Our VQ-VAE quantized everything (loses continuous precision). CANDI quantizes only the
+  stall decision and keeps displacement continuous.
+- **Additional opportunity**: The RF classifier could serve as a guidance signal during sampling
+  (classifier-based guidance), steering trajectories toward human-like feature distributions
+  without RL/GRPO.
+- **Risk**: Implementation complexity. Need to handle temporal dissonance between discrete and
+  continuous corruption schedules.
+
+**2. Action Chunking / Chunk-Level Diffusion**
+
+Ref: ACT (Zhao et al., RSS 2023), Diffusion Policy (Chi et al., RSS 2023)
+
+Generate coherent 25-step (~200ms) chunks via diffusion, then sequence chunks autoregressively.
+Each chunk is produced holistically (natural kinematic profiles internally), conditioned on the
+tail of the previous chunk. Compounding error drops from 200 decision points (per-step AR) to
+~8 (per-chunk AR).
+
+- **Why novel vs. what we tried**: ZIMT generates one step at a time (exposure bias). Our
+  DDPM generates the full 200-step trajectory at once (smooth conditional means). Chunking is
+  the middle ground — holistic within-chunk generation avoids per-step compounding, while
+  chunk-level sequencing avoids global smoothing.
+- **Can reuse**: Existing DDPM U-Net backbone, adapted for chunk-length inputs with overlap
+  conditioning.
+- **Risk**: Chunk boundaries may create artifacts. Chunk size is a key hyperparameter (too
+  small = exposure bias returns, too large = smoothing returns).
+
+**3. SoundStorm/MaskGIT Masked Iterative Decoding on VQ-VAE Codebook**
+
+Ref: SoundStorm (Borsos et al., 2023), MaskGIT (Chang et al., CVPR 2022)
+
+Uses our existing VQ-VAE codebook (validated: 30 px/s error, 1024/1024 entries used) with a
+new generation paradigm. Instead of left-to-right autoregressive (which caused mode collapse —
+420/1024 tokens used), start with all tokens masked and iteratively unmask in confidence order.
+A bidirectional Transformer sees the full sequence context including both endpoints.
+
+- **Why novel vs. what we tried**: Our VQ-VAE + autoregressive Transformer generated
+  left-to-right (mode collapse, error compounding). This is bidirectional — the model sees
+  both start and end when deciding each token. Eliminates endpoint correction entirely.
+  Easy tokens (mid-ballistic) fill first; hard tokens (stall transitions) refine with full
+  context.
+- **Can reuse**: Existing VQ-VAE codebook and tokenization pipeline.
+- **Risk**: Masked generation may not capture temporal causality as well as autoregressive.
+  Confidence-based ordering may not align with trajectory structure.
+
+### Tier 2 — Strong theoretical fit, moderate risk
+
+**4. Decoupled Shape + Speed Generation (Two-Thirds Power Law)**
+
+Ref: Two-thirds power law (Lacquaniti et al., 1983), motor control literature
+
+Generate trajectory in two stages: (a) spatial path shape (sequence of heading changes or
+curvature values), (b) speed profile along that path conditioned on curvature. The two-thirds
+power law (v = gamma * kappa^(-1/3)) provides a physics prior: humans slow down at curves.
+
+- **Why novel**: All our models generate (x, y, t) jointly. This factored approach isolates
+  curvature (our hardest feature) into a dedicated shape model, with speed constrained by
+  physics. The v147 experiment (DDPM spatial + real timing = AUC 0.82) validates the
+  factored premise — the spatial path is already good enough if timing is right.
+- **Risk**: Reintegrating shape + speed back to (x,y,t) may introduce artifacts. Stall
+  events need separate handling (speed = 0 violates the power law).
+
+**5. ProDMP (Probabilistic Dynamic Movement Primitives)**
+
+Ref: ProDMP (Li et al., CoRL 2023, arXiv 2210.01531)
+
+Represent each trajectory as ~30 basis function weights rather than 200 timesteps. The DMP
+differential equation guarantees smooth velocity profiles with goal convergence. A neural
+network (VAE or diffusion) generates the basis function weights conditioned on (start, end,
+distance).
+
+- **Why novel**: Our parametric models (min-jerk, sigma-lognormal) used fixed functional
+  forms. ProDMP's basis functions are learned from data and capture the full covariance
+  structure. Reduces the generation problem from 200-D sequence to ~30-D vector.
+- **Risk**: DMP produces smooth trajectories by construction — stalls need augmentation via
+  a separate discrete model. Integration of smooth DMP + stall injection is the same
+  hybrid challenge we've hit before.
+
+**6. Autoregressive Normalizing Flow (MoGlow-style)**
+
+Ref: MoGlow (Alexanderson et al., SIGGRAPH Asia 2020)
+
+Invertible neural network that maps noise to data, trained with exact maximum likelihood.
+Autoregressive (frame-by-frame) with LSTM temporal context. No mode collapse risk (exact
+likelihood), no adversarial training instability, naturally handles variable-length sequences.
+
+- **Why novel**: Architecturally distinct from everything tried. Not diffusion, not an MDN,
+  not a VAE. Exact likelihood avoids the ELBO gap. Invertibility means every training example
+  maps to a unique latent code — no information loss.
+- **Demonstrated**: Controllable motion generation conditioned on desired direction, directly
+  analogous to our (start, end) conditioning.
+- **Risk**: Invertibility constraint limits expressiveness of each layer. Training can be slow.
+
+### Tier 3 — Interesting, higher risk or incremental
+
+**7. Neural SDE with Signal-Dependent Noise**
+
+Ref: Stable Neural SDEs (ICLR 2024, arXiv 2402.14989), Harris & Wolpert 1998
+
+Models trajectory as a stochastic dynamical system: dx = f(x,t)dt + g(x,t)dW. The noise
+coefficient g scales with speed (matching known neuroscience: motor noise is signal-dependent).
+Produces structured variability where high-speed segments have proportional noise and low-speed
+segments have directional uncertainty.
+
+- **Why novel**: Our DDPM uses diffusion as a generative mechanism (noise→data). Neural SDE
+  uses diffusion as a dynamics model (the trajectory evolves as a stochastic process). The
+  noise is structured by the learned g(x,t), not isotropic Gaussian.
+- **Risk**: Standard SDE can't produce exact-zero stalls. Would need a Jump-SDE variant
+  (Poisson events trigger stall mode). Complex to implement and train.
+
+**8. Energy-Guided Diffusion (EnergyMoGen-style)**
+
+Ref: EnergyMoGen (CVPR 2025, arXiv 2412.14706), Energy Matching (NeurIPS 2025)
+
+Define energy functions for feature groups (velocity stats, curvature, angular velocity).
+During diffusion sampling, energy gradients steer each denoising step toward human-like
+feature distributions. Multiple energies compose via learned fusion weights.
+
+- **Why novel**: Our feature-matching fine-tuning failed from exposure bias in the
+  autoregressive loop. Energy guidance in diffusion has no autoregressive loop, so no
+  exposure bias. Our rejection sampling operated post-hoc and killed variance. Energy
+  guidance steers the distribution during generation, preserving variance.
+- **Risk**: Requires differentiable approximations of the 18 kinematic features (curvature
+  involves division by |v|^3 — numerically unstable near stalls). Conflicting energy
+  gradients may cause oscillation.
+
+**9. Mamba/S4 State-Space Backbone (Drop-in for ZIMT)**
+
+Ref: Mamba (Gu & Dao, 2023), MamTra (arXiv 2603.12342)
+
+Replace ZIMT's 6-layer Transformer with a selective state-space model. Linear-time inference,
+selective state propagation (learn what to remember/forget). The state space mechanism is
+a learned linear dynamical system — natural fit for trajectory dynamics.
+
+- **Why novel**: Different inductive bias than attention. Selective state propagation may
+  better capture velocity/acceleration momentum than position-based attention.
+- **Risk**: Backbone swap is low-effort but likely incremental. Same MDN output head, same
+  training procedure — unlikely to close the 0.864→0.75 gap alone.
+
+### Implementation Priority
+
+For a generative model below AUC 0.75, recommended order:
+1. Action Chunking (#2) — simplest, reuses DDPM backbone, directly solves exposure bias
+2. SoundStorm on VQ-VAE (#3) — reuses existing codebook, novel generation paradigm
+3. CANDI hybrid diffusion (#1) — most theoretically sound, highest implementation cost
