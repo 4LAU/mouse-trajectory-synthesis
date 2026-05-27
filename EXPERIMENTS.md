@@ -1,6 +1,6 @@
 # Experiment Log
 
-Full chronological experiment log. 145+ experiments from parametric baselines through corpus replay to generative models. AUC = OOB Random Forest, lower is better (0.50 = indistinguishable from human).
+Full chronological experiment log. 155+ experiments from parametric baselines through corpus replay to generative models. AUC = OOB Random Forest, lower is better (0.50 = indistinguishable from human).
 
 ---
 
@@ -841,6 +841,446 @@ a learned linear dynamical system — natural fit for trajectory dynamics.
 ### Implementation Priority
 
 For a generative model below AUC 0.75, recommended order:
-1. Action Chunking (#2) — simplest, reuses DDPM backbone, directly solves exposure bias
-2. SoundStorm on VQ-VAE (#3) — reuses existing codebook, novel generation paradigm
-3. CANDI hybrid diffusion (#1) — most theoretically sound, highest implementation cost
+1. ~~Action Chunking (#2) — simplest, reuses DDPM backbone, directly solves exposure bias~~ **TRIED, FAILED (AUC 0.957)**
+2. ~~SoundStorm on VQ-VAE (#3) — reuses existing codebook, novel generation paradigm~~ **TRIED, FAILED (AUC 0.996)**
+3. CANDI hybrid diffusion (#1) — most theoretically sound, addresses stalls without VQ-VAE quantization bottleneck
+4. Decoupled Shape + Speed (#4) — partially validated by v147 (DDPM spatial + real timing = 0.82)
+5. MoGlow (#6) — exact likelihood, no mode collapse, but still autoregressive
+
+## Chunk Diffusion Experiment (2026-05-15)
+
+### Architecture
+
+Action chunking / chunk-level diffusion, inspired by ACT (Zhao et al., RSS 2023) and
+Diffusion Policy (Chi et al., RSS 2023). Generates 25-step (~200ms) chunks via DDPM
+with DDIM sampling, sequenced autoregressively.
+
+- **Model**: 1D U-Net (48→96→192 channels), ~1.17M params
+- **Input**: Noisy chunk (B, 25, 3) — dx, dy, stall_logit
+- **Conditioning**: Global (log_dist, log_dur, cos_a, sin_a) + Local (rem_dx, rem_dy, rem_frac, progress, cum_dx, cum_dy) + Context encoder (5-step tail of previous chunk)
+- **Diffusion**: 200 steps cosine schedule, x_0 prediction, DDIM sampling (50 steps, eta=0.3)
+- **Stall modeling**: Joint 3rd channel (stall logit +3.0/-3.0), sigmoid threshold at inference
+- **Training data**: 1,740,707 overlapping chunks (stride 20) from 499,955 trajectories
+
+### Training
+
+80 epochs, AdamW lr=3e-4, CosineAnnealing, batch_size=256, AMP, grad clip 1.0.
+Best checkpoint: epoch 67, val_loss 0.148.
+
+### Results
+
+**AUC 0.957 at n=2000 — FAILED.**
+
+| Feature | Wasserstein | Note |
+|---------|------------|------|
+| velocity_skewness | 1.764 | *** Catastrophic — no global velocity awareness |
+| angular_velocity_mean | 0.775 | *** HIGH |
+| angular_velocity_std | 0.655 | *** HIGH |
+| time_to_peak_velocity | 0.537 | *** HIGH |
+| path_efficiency | 0.258 | Moderate |
+| num_direction_changes | 0.254 | Moderate |
+| All velocity/accel features | < 0.063 | Good |
+
+RF 5-fold CV: 0.957, GBM 5-fold CV: 0.964. Feature importance spread across
+velocity_skewness (0.149), angular_velocity_mean (0.138), mean_jerk (0.082),
+angular_velocity_std (0.080).
+
+### Why It Failed
+
+**No global trajectory awareness.** Each 25-step chunk generates in isolation — the
+5-step context and local conditioning (remaining_frac, progress) are insufficient to
+convey where in the global velocity profile the chunk sits. Chunk at 20% progress
+(peak acceleration) looks identical to chunk at 80% (deceleration tail) because the
+model has no representation of the overall trajectory shape.
+
+velocity_skewness = 1.764 Wasserstein is the smoking gun: this feature measures
+the asymmetry of the full-trajectory speed distribution, which requires knowing the
+complete velocity envelope. No individual chunk has enough context for this.
+
+**Lesson**: The exposure-bias / global-awareness tradeoff has no middle ground.
+Per-step AR (ZIMT) has exposure bias but preserves global velocity profile shape.
+Full-trajectory diffusion (DDPM) preserves global shape but over-smooths.
+Per-chunk AR is the worst of both: no global awareness AND chunk-boundary artifacts.
+
+This confirms that the next architecture must have full-sequence context at every
+generation step — pointing to bidirectional approaches (SoundStorm/MaskGIT).
+
+## Frontier Research Synthesis (2026-05-15)
+
+Deep literature survey across masked generative models, robotics action generation,
+handwriting/speech synthesis, and our own failure mode analysis. Key findings below.
+
+### Three-Pattern Failure Analysis
+
+All three persistent gaps in our generative models trace to a single mechanism:
+incorrect generation of the decelerate → hold → change heading → accelerate pattern
+at stall boundaries.
+
+**Pattern 1 — velocity_skewness**: Requires global trajectory awareness. The velocity
+profile is asymmetric (peak at 35%, long decel tail). Full-trajectory models preserve
+this; chunk and per-step models destroy it because no local window encodes the global
+velocity envelope.
+
+**Pattern 2 — angular_velocity**: Comes from heading changes at stall boundaries
+(decel→hold→heading change→reaccel), NOT from smooth curves. The only model that
+matched human angular velocity (42.7 vs 45.8) was VQ-VAE with discrete stall tokens
+at 55% stall rate. The stalls were wrong (55% vs 6%) but the angular velocity
+mechanism was correct.
+
+**Pattern 3 — accel-jerk decorrelation**: Human r=-0.025, all synthetic r=0.999. Jerk
+spikes at stall transitions (abrupt acceleration changes between smooth ballistic
+segments) break the derivative relationship. Only exact-zero stalls followed by
+heading changes produce these spikes. Continuous models always have smooth
+acceleration→jerk relationships.
+
+### Key Papers from Frontier Research
+
+| Paper | Venue | Relevance |
+|-------|-------|-----------|
+| **MoMask** (Guo et al.) | CVPR 2024 | MaskGIT on VQ motion tokens → SOTA human motion generation. Closest analogue to our problem. |
+| **MAR** (Li et al.) | NeurIPS 2024 | Masked autoregressive with per-token diffusion loss. Continuous tokens without VQ. |
+| **MaskGCT** | ICLR 2025 | Masked generative codec transformer for speech. Non-autoregressive, full bidirectional context. |
+| **CARP** (Desai et al.) | Dec 2024 | Autoregression across SCALE not TIME — generate coarse shape, then refine. Matches diffusion quality at AR speed. |
+| **JointDiff** | ICLR 2026 | Joint continuous+discrete diffusion for trajectories with discrete events. |
+| **IMPACT** | CVPR 2025 | Iterative masked prediction for action chunking. Extends MaskGIT to robotics. |
+| **MDG** | 2025 | Masked discrete generation for molecular conformations. Same paradigm, different domain. |
+| **CosyVoice 2** | 2025 | Finite scalar quantization + masked generation for speech. Shows FSQ can replace VQ-VAE. |
+| **DiffInk** | 2025 | Diffusion for handwriting with variable-length sequences. Similar kinematic requirements. |
+| **PALLE** | 2025 | Predictive autoregressive latent language for motion. Multi-scale latent codes. |
+
+### Why SoundStorm/MaskGIT Is the Recommended Next Step
+
+The synthesis across all research fronts points to masked iterative decoding on
+our existing VQ-VAE codebook as the highest-probability path:
+
+1. **Full bidirectional context**: Unlike left-to-right AR (ZIMT, VQ-VAE transformer),
+   the model sees the entire sequence including both endpoints at every decoding step.
+   Preserves global velocity profile shape (Pattern 1).
+
+2. **Discrete stall tokens**: Reuses our validated VQ-VAE codebook (1024 entries,
+   100% utilization, stall token 0). Only model family that matched human angular
+   velocity was discrete tokens (Pattern 2).
+
+3. **Confidence-ordered unmasking**: Easy tokens (mid-ballistic) fill first; stall
+   boundary tokens fill last with maximum context. Hardest decisions get the most
+   information (Pattern 3).
+
+4. **No endpoint correction**: Start and end tokens always unmasked. Model learns to
+   fill the middle such that cumulative displacements naturally sum to the correct
+   endpoint.
+
+5. **Existing assets**: VQ-VAE codebook and 32.4M tokenized sequences already
+   validated. Only the sequence model needs to be built.
+
+**Fallback**: CARP coarse-to-fine (generate 10 keypoints, then refine to full
+resolution). Addresses global-vs-local tension from a different angle.
+
+## Updated Scoreboard (2026-05-15)
+
+| Approach | AUC (n=2000) | Type | Notes |
+|----------|-------------|------|-------|
+| **Corpus Replay (4.16M)** | **0.52** | Retrieval | Open-source ready |
+| Corpus Perturb v7 | 0.645 | Retrieval + noise | Best perturbation variant |
+| **Corpus Rotate** | **0.686** | Retrieval + transform | Below 0.75 target |
+| Corpus Sim | 0.682 | Retrieval + transform | Same mechanism as rotate |
+| DDPM + borrowed timing | 0.820 | Hybrid (not generative) | Proves DDPM path is OK |
+| **ZIMT magcorr** | **0.864** | **Generative** | **Best neural generative** |
+| ZIMT FM (50 iter) | 0.870 | Generative | Exposure bias worsened it |
+| ZIMT baseline | 0.878 | Generative | Original ZIMT |
+| VQ-VAE + Transformer | 0.890 | Generative | Undertrained, mode collapse |
+| ZIMT reject (N=8) | 0.892 | Generative | Variance collapse |
+| Corpus Blend | 0.948 | Retrieval + blend | Arc-length resampling kills features |
+| **Chunk Diffusion** | **0.957** | **Generative** | **No global awareness** |
+| ZIMT guided | 0.968 | Generative | Guidance at inference fails |
+
+## SoundStorm / MaskGIT on VQ-VAE (2026-05-16)
+
+### SoundStorm Training
+
+Trained a masked bidirectional transformer (SoundStormTransformer) on our existing VQ-VAE
+token sequences (32.4M tokens, 1025 vocab including stall token 0).
+
+| Config | Value |
+|--------|-------|
+| Architecture | 6-layer Transformer, 256d, 8 heads, 1024 FFN |
+| Parameters | 6,088,705 |
+| Training data | 500K tokenized trajectories (VQ-VAE codebook) |
+| Conditioning | FiLM on (log_dist, log_dur, cos_angle, sin_angle) |
+| Training | 16 epochs, AdamW lr=3e-4, cosine schedule, batch 256 |
+| Best checkpoint | Epoch 16, val_loss 2.4722, val_acc 49.3% |
+
+### SoundStorm Evaluation
+
+| Method | AUC (n=2000) | Key Issue |
+|--------|-------------|-----------|
+| From-scratch generation | 0.996 | Cold-start collapse: all-MASK → model predicts stall (37% confidence) → locks in all-stall |
+| generate_refine (donor init) | 0.996 | Spatial shape wrong despite iterative refinement |
+| Soft decoding (expected displacement) | 0.997 | Probability-weighted displacement doesn't help |
+| Donor token perturbation | 0.914 | VQ-VAE quantization bottleneck — accumulated tokens create wrong path shapes |
+
+### Root Cause: VQ-VAE Quantization Bottleneck
+
+The fundamental failure is the VQ-VAE displacement tokenization, not the SoundStorm architecture.
+When discrete displacement tokens are accumulated to reconstruct paths, the 1024-entry codebook
+quantization destroys spatial smoothness. Key diagnostics:
+
+- Curvature: wrong (quantized steps create artificial curvature patterns)
+- Angular velocity: wrong (quantized directions don't match continuous)
+- Path efficiency: wrong (quantized path length differs from continuous)
+- Donor token perturbation (AUC 0.914): even starting from real donor tokens and only replacing
+  a few with SoundStorm predictions gives 0.914 — the quantization is the bottleneck, not the
+  sequence model
+
+**Lesson**: VQ-VAE-based generation is a dead end for this task. The codebook is validated for
+reconstruction (30 px/s speed MAE) but accumulating discrete tokens into paths creates
+fundamentally wrong kinematic profiles. Future approaches must keep displacements continuous.
+
+### Cold-Start Collapse Analysis
+
+When generating from all-MASK tokens, the model's first prediction at every position is stall
+token 0 with 37% confidence. Confidence-based unmasking then reveals all positions simultaneously
+as stall tokens, producing zero-displacement trajectories. Attempts to fix:
+
+- Random-order unmasking for first 3 rounds: didn't break the stall attractor
+- Higher temperature (2.5) + top-p (0.95): more diverse tokens but still wrong spatial shape
+- CFG (scale 2.0): amplified endpoint conditioning but spatial coherence still wrong
+
+### atan2(0,0) Discovery
+
+During investigation of corpus rotate's `num_direction_changes` mismatch (Wasserstein 0.32),
+discovered the root cause: `atan2(0,0)=0` during stall periods. Rotation shifts movement
+angles but stall angles always return 0, changing sign patterns at stall→movement transitions.
+This adds ~8 direction changes on average. Confirmed:
+- Direction changes correlate with trajectory length (r=0.586), NOT stall fraction (r=0.019)
+- Pool and evaluation set have nearly identical direction change distributions (Wasserstein 0.059)
+- The mismatch comes from the rotation transform itself, not sampling bias
+- This is inherent to the rotation approach and cannot be fixed without changing the transform
+
+### Enhanced Corpus Rotate Parameter Sweep
+
+After SoundStorm failed, reverted experiments/soundstorm.py to enhanced corpus rotate with
+raw donor coordinates (no VQ-VAE). Systematic parameter sweep:
+
+| Config | AUC (n=2000) | Notes |
+|--------|-------------|-------|
+| K=5 (distance match only) | 0.696 | Baseline corpus rotate |
+| K=20 | 0.682 | More diversity helps |
+| K=50 | **0.670** | **Best** |
+| K=100 | 0.675 | Diminishing returns |
+| K=unlimited | 0.678 | Too much diversity |
+| K=50 + length matching (ratio 0.3) | 0.717 | Length matching HURTS |
+| K=50 + stall jitter (directional) | 0.763 | Curvature artifacts |
+| K=50 + stall jitter (random) | 0.799 | Worse curvature artifacts |
+| K=50 + Gaussian smoothing | — | Destroyed angular velocity and curvature |
+| K=50 + pixel rounding | — | angular_velocity 0.55 Wass, curvature 0.33 Wass |
+
+Best enhanced corpus rotate: **AUC 0.670** at K=50 with distance matching only.
+Still not a neural generative approach.
+
+## Updated Scoreboard (2026-05-16)
+
+| Approach | AUC (n=2000) | Type | Notes |
+|----------|-------------|------|-------|
+| **Corpus Replay (4.16M)** | **0.52** | Retrieval | Translate-only, floor |
+| Corpus Perturb v7 | 0.645 | Retrieval + noise | Best perturbation variant |
+| **Enhanced Corpus Rotate (K=50)** | **0.670** | Retrieval + transform | Best rotation variant |
+| Corpus Rotate (K=5) | 0.686 | Retrieval + transform | Less donor diversity |
+| Corpus Sim | 0.682 | Retrieval + transform | Same mechanism as rotate |
+| DDPM + borrowed timing | 0.820 | Hybrid (not generative) | Proves DDPM path is OK |
+| **ZIMT magcorr** | **0.864** | **Generative** | **Best neural generative** |
+| ZIMT FM (50 iter) | 0.870 | Generative | Exposure bias worsened it |
+| ZIMT baseline | 0.878 | Generative | Original ZIMT |
+| VQ-VAE + Transformer | 0.890 | Generative | Undertrained, mode collapse |
+| ZIMT reject (N=8) | 0.892 | Generative | Variance collapse |
+| SoundStorm donor perturb | 0.914 | Generative | VQ-VAE quantization bottleneck |
+| Corpus Blend | 0.948 | Retrieval + blend | Arc-length resampling kills features |
+| **Chunk Diffusion** | **0.957** | **Generative** | **No global awareness** |
+| ZIMT guided | 0.968 | Generative | Guidance at inference fails |
+| SoundStorm from-scratch | 0.996 | Generative | Cold-start stall collapse |
+| SoundStorm generate_refine | 0.996 | Generative | Spatial shape wrong |
+| SoundStorm soft decode | 0.997 | Generative | No improvement |
+
+### Architectures Tried: 3 of 9 — All Failed
+
+| # | Architecture | Status | AUC | Failure Mode |
+|---|-------------|--------|-----|-------------|
+| 2 | Action Chunking | FAILED | 0.957 | No global velocity awareness |
+| 3 | SoundStorm/MaskGIT | FAILED | 0.996 | VQ-VAE quantization bottleneck |
+| 1 | CANDI hybrid diffusion | **NEXT** | — | Addresses stalls without VQ-VAE |
+| 4 | Decoupled Shape+Speed | Untried | — | Partially validated by v147 |
+| 5 | ProDMP | Untried | — | Smooth by construction, needs stall augmentation |
+| 6 | MoGlow | Untried | — | Exact likelihood, but still AR |
+| 7 | Neural SDE | Untried | — | Can't produce exact stalls |
+| 8 | Energy-Guided Diffusion | Untried | — | Numerically unstable near stalls |
+| 9 | Mamba | Untried | — | Likely incremental over ZIMT |
+
+## CANDI Hybrid Discrete-Continuous Diffusion (2026-05-26)
+
+### Architecture
+
+Joint Gaussian diffusion on continuous channels + absorbing-state masking on binary stall labels,
+in a single Transformer denoiser. Two output heads share a backbone that learns the coupling
+between stall decisions and displacement dynamics.
+
+| Config | Value |
+|--------|-------|
+| Architecture | 6-layer Transformer, 256d, 4 heads, 1024 FFN, FiLM conditioning |
+| Parameters | 5,762,051 |
+| Input channels | 4: (ch0, ch1) continuous + stall_state + mask_flag |
+| Output | 2-channel continuous head + 1-channel stall logit |
+| Diffusion | 1000-step cosine schedule, DDIM sampling (50 steps) |
+| Discrete masking | Absorbing-state, mask_prob = 1 - sqrt(alpha_bar_t) |
+| Conditioning | FiLM on (log_dist, log_dur, cos_angle, sin_angle) with 10% dropout for CFG |
+| Max seq len | 128 (covers 89% of trajectories, 4x less attention compute vs 256) |
+
+### Training: Cartesian (dx, dy) Representation
+
+First trained on distance-normalized (dx,dy) displacements.
+
+| Config | Value |
+|--------|-------|
+| Data | 200K trajectories (from 500K), 90/10 train/val split |
+| Training | 20 epochs, AdamW lr=3e-4, CosineAnnealing, batch 128, AMP |
+| data_std | 0.055, data_scale = 18.1 |
+| Best checkpoint | Epoch 20, val_cont=0.264, val_disc=0.112 |
+| Time per epoch | ~108s on RTX 4070 |
+
+### Cartesian Evaluation
+
+| Config | AUC (n=200) | AUC (n=2000) | Key Issue |
+|--------|-------------|-------------|-----------|
+| CFG=2.0, eta=0.0 | 0.863 | 0.950 | angular_velocity_std 0.34 Wass |
+| CFG=1.0, eta=0.0 | 0.841 | 0.948 | Similar |
+| CFG=0.0, eta=0.0 | 0.856 | — | — |
+| CFG=2.0, eta=1.0 | 0.889 | — | Stochastic adds noise |
+
+**200-sample AUC is unreliable** — Cartesian showed 0.86 at n=200 but 0.95 at n=2000.
+The RF needs enough data to detect consistent subtle artifacts.
+
+**Key discriminators at n=2000**: angular_velocity (0.34 Wasserstein), max_deviation (0.28),
+path_efficiency (0.25), curvature (0.19/0.24). All path-shape features — the model gets
+velocity/acceleration magnitudes right but direction sequences wrong.
+
+### Root Cause: Cartesian (dx,dy) Can't Capture Angular Dynamics
+
+Diffusion on raw (dx,dy) produces displacements that are individually reasonable but whose
+direction sequence doesn't match human biomechanics. Angular velocity (rate of direction change)
+and curvature are structural properties of the direction sequence that Gaussian diffusion
+in Cartesian space can't capture.
+
+Post-processing attempts all failed:
+- Uniform filter smoothing: AUC 0.97-0.99 (destroys velocity structure)
+- Cubic spline resampling: AUC 0.94-0.99 (same issue)
+- DH_SCALE adjustment: no improvement at n=2000
+
+### Training: Polar (speed, delta_heading) Representation
+
+Switched to polar representation where angular velocity is a direct model output.
+
+| Config | Value |
+|--------|-------|
+| Representation | (speed, delta_heading) instead of (dx, dy) |
+| Data conversion | Inline in DataLoader: atan2 → heading → diff → wrap to [-π,π] |
+| Stall handling | Carry-forward heading during stalls (avoids atan2(0,0)=0 artifact) |
+| Speed std | 0.074 |
+| Delta heading std | 0.428 |
+| Separate scaling | Each channel scaled to unit variance independently |
+
+Two training runs:
+
+| Run | Epochs | Best val_cont | Best val_disc | Notes |
+|-----|--------|--------------|--------------|-------|
+| 20 epochs | 20 | 0.458 (ep 18) | 0.109 | First polar run |
+| 30 epochs | 30 | 0.423 (ep 24) | 0.106 | Slower LR schedule helps |
+
+### Polar Evaluation
+
+| Config | AUC (n=200) | AUC (n=2000) | Key Observation |
+|--------|-------------|-------------|-----------------|
+| 20ep, CFG=1.0 | 0.810 | 0.919 | Beats Cartesian (0.950) |
+| 30ep, CFG=1.0 | 0.881 | 0.917 | Barely better |
+| **30ep, CFG=0.0** | **0.720** | **0.852** | **New best — no guidance** |
+| 30ep, CFG=2.0 | 0.815 | 0.922 | CFG hurts |
+| 30ep, CFG=0.0, eta=0.7 | — | 0.862 | Stochastic adds noise |
+
+### Critical Bug Fix: Endpoint Correction in Polar Mode
+
+The first polar evaluation code computed endpoint correction weights from wrongly-scaled raw
+model output (dividing both channels by speed_scale, making delta_heading contribute incorrectly
+to magnitude weights). The fix: compute step magnitudes from the reconstructed (cum_x, cum_y)
+positions instead.
+
+This bug fix improved AUC from **0.917 → 0.852** — a larger improvement than any hyperparameter
+change. The distorted correction weights were systematically warping path shapes.
+
+### Key Findings
+
+1. **Polar representation matters**: Encoding (speed, delta_heading) instead of (dx,dy) improved
+   AUC from 0.950 to 0.852 (when combined with correct endpoint correction). The model directly
+   learns angular velocity distributions.
+
+2. **CFG hurts naturalness**: Classifier-free guidance amplifies conditioning signal, distorting
+   fine dynamics. CFG=0.0 is best (0.852). Also 2x faster (no second forward pass).
+
+3. **Endpoint correction bugs are devastating**: A subtle scaling error in the correction weights
+   caused a 0.065 AUC regression. Path-shape features (angular velocity, curvature, efficiency)
+   are extremely sensitive to how endpoint error is distributed.
+
+4. **30 epochs > 20 epochs**: Slower LR schedule allows continued improvement. Val loss dropped
+   from 0.458 to 0.423.
+
+5. **200-sample AUC is unreliable**: Varied by 0.06-0.10 between runs. Always verify at n=2000.
+
+### Remaining Gaps (n=2000, CFG=0.0)
+
+| Feature | Wasserstein | Note |
+|---------|------------|------|
+| angular_velocity_std | 0.304 | Still largest gap |
+| angular_velocity_mean | 0.280 | |
+| path_efficiency | 0.262 | Path straightness |
+| curvature_std | 0.237 | Persistent across all models |
+| curvature_mean | 0.188 | Persistent across all models |
+| num_direction_changes | 0.179 | |
+| velocity_skewness | 0.148 | Much improved from Cartesian |
+| movement_duration | 0.151 | |
+| All velocity/accel features | < 0.05 | Excellent |
+
+RF feature importances spread out — no single feature dominates (top: mean_jerk 0.110,
+movement_duration 0.080, mean_acceleration 0.072).
+
+## Updated Scoreboard (2026-05-27)
+
+| Approach | AUC (n=2000) | Type | Notes |
+|----------|-------------|------|-------|
+| **Corpus Replay (4.16M)** | **0.52** | Retrieval | Translate-only, floor |
+| Corpus Perturb v7 | 0.645 | Retrieval + noise | Best perturbation variant |
+| **Enhanced Corpus Rotate (K=50)** | **0.670** | Retrieval + transform | Best rotation variant |
+| Corpus Rotate (K=5) | 0.686 | Retrieval + transform | Less donor diversity |
+| Corpus Sim | 0.682 | Retrieval + transform | Same mechanism as rotate |
+| DDPM + borrowed timing | 0.820 | Hybrid (not generative) | Proves DDPM path is OK |
+| **CANDI polar (30ep, CFG=0)** | **0.852** | **Generative** | **New best neural generative** |
+| ZIMT magcorr | 0.864 | Generative | Previous best generative |
+| ZIMT FM (50 iter) | 0.870 | Generative | Exposure bias worsened it |
+| ZIMT baseline | 0.878 | Generative | Original ZIMT |
+| VQ-VAE + Transformer | 0.890 | Generative | Undertrained, mode collapse |
+| ZIMT reject (N=8) | 0.892 | Generative | Variance collapse |
+| SoundStorm donor perturb | 0.914 | Generative | VQ-VAE quantization bottleneck |
+| Corpus Blend | 0.948 | Retrieval + blend | Arc-length resampling kills features |
+| CANDI cartesian (20ep) | 0.950 | Generative | (dx,dy) can't capture angular dynamics |
+| **Chunk Diffusion** | **0.957** | **Generative** | **No global awareness** |
+| ZIMT guided | 0.968 | Generative | Guidance at inference fails |
+| SoundStorm from-scratch | 0.996 | Generative | Cold-start stall collapse |
+
+### Architectures Tried: 4 of 9
+
+| # | Architecture | Status | AUC | Failure Mode |
+|---|-------------|--------|-----|-------------|
+| 1 | **CANDI hybrid diffusion** | **BEST** | **0.852** | **New best. Angular velocity + curvature remain.** |
+| 2 | Action Chunking | FAILED | 0.957 | No global velocity awareness |
+| 3 | SoundStorm/MaskGIT | FAILED | 0.996 | VQ-VAE quantization bottleneck |
+| 4 | Decoupled Shape+Speed | Untried | — | Partially validated by v147 |
+| 5 | ProDMP | Untried | — | Smooth by construction, needs stall augmentation |
+| 6 | MoGlow | Untried | — | Exact likelihood, but still AR |
+| 7 | Neural SDE | Untried | — | Can't produce exact stalls |
+| 8 | Energy-Guided Diffusion | Untried | — | Numerically unstable near stalls |
+| 9 | Mamba | Untried | — | Likely incremental over ZIMT |

@@ -17,15 +17,13 @@ replay. Model weights loaded at import time are permitted; trajectory databases
 are not.
 
 The current state of the art for fully generative synthesis under this
-constraint is **AUC 0.864** (ZIMT with magnitude-weighted endpoint correction).
-The previous best was 0.892 (VQ-VAE + GRPO-finetuned transformer), but that
-checkpoint was lost and is not reproducible. The theoretical floor - corpus
-replay of the same distribution - is AUC ~0.52 (with the full 4.16M-trajectory
-pool), essentially indistinguishable from random. The gap between 0.864 and 0.52
-is dominated by two phenomena: (1) discrete stall events embedded in continuous
-motion, and (2) the joint distribution of kinematic features (particularly
-acceleration-jerk correlations and angular velocity), which no current model
-fully captures.
+constraint is **AUC 0.852** (CANDI hybrid discrete-continuous diffusion with
+polar representation). The previous best was 0.864 (ZIMT with magnitude-weighted
+endpoint correction). The theoretical floor - corpus replay of the same
+distribution - is AUC ~0.52 (with the full 4.16M-trajectory pool), essentially
+indistinguishable from random. The gap between 0.852 and 0.52 is dominated by
+angular velocity distribution mismatch, path efficiency, and curvature — all
+path-shape features that persist across model families.
 
 ---
 
@@ -486,7 +484,10 @@ zero-displacement events that drive human curvature:
 | Parametric submovement (min-jerk) | No - smooth analytic curves | ~0.3 | 1.00 | Additive submovements stack velocity; segments are individually smooth |
 | Speed-bin GRU (discrete speed, continuous XY) | Approximate (near-zero bin) | ~0.3 | ~0.99 | Spatial drift in XY accumulates; path efficiency 0.59 vs human 0.84 |
 | DDPM + post-hoc speed dips | Approximate (near-zero) | ~15 | ~0.999 | Perturbations create direction changes at non-zero speed, not at stalls |
-| **VQ-VAE + AR Transformer** | **Yes - stall token (0,0)** | **Unbounded** | **Unknown** | **First architecture to match the problem's mixed discrete-continuous structure** |
+| Chunk Diffusion (25-step) | Approximate (stall logit channel) | ~0.2 | ~0.96 | No global trajectory awareness — velocity_skewness 1.76 Wasserstein |
+| VQ-VAE + AR Transformer | Yes - stall token (0,0) | ~0.4 | ~0.89 | Mode collapse (420/1024 tokens), error compounding |
+| VQ-VAE + MaskGIT (SoundStorm) | Yes - stall token (0,0) | ~0.4 | ~0.996 | VQ-VAE quantization bottleneck — accumulated tokens create wrong path shapes |
+| **CANDI hybrid diffusion (polar)** | **Yes - discrete stall channel** | **~1300** | **~0.85** | **Angular velocity and curvature distributions still mismatched** |
 
 ### 5.2 Diffusion Models: The Conditional Mean Problem
 
@@ -602,11 +603,16 @@ structure:
   stall cluster point in one direction; tokens after point in a slightly
   different direction.
 
-This is the first architecture in our exploration that correctly matches the
-mixed continuous-discrete structure of the data. Whether it achieves human-level
-curvature and low AUC remains an empirical question - but it is the first
-approach where the representational limitation is removed rather than worked
-around.
+**Update (2026-05-16)**: Extensive testing of both autoregressive (Section 5.5
+above) and masked bidirectional (Section 5.9) generation on VQ-VAE tokens
+revealed a fundamental bottleneck: the codebook quantization itself. While the
+architecture correctly matches the problem's mixed discrete-continuous structure
+in principle, the 1024-entry codebook's displacement quantization (30 px/s
+reconstruction error per step) compounds over 50-200 steps to produce paths with
+wrong curvature, angular velocity, and efficiency. The stall token mechanism
+works as intended, but the motion tokens are too imprecise for path accumulation.
+This motivates hybrid discrete-continuous diffusion (CANDI-style): keep the
+discrete stall channel but generate continuous displacements without quantization.
 
 ### 5.6 Classifier-Free Guidance and GRPO Fine-Tuning
 
@@ -686,6 +692,105 @@ conclusively ruled out:
 Each of these failures strengthens the conclusion: the curvature gap is not a
 tuning problem. It is a representational problem that requires an architecture
 with discrete zero-displacement tokens.
+
+### 5.9 VQ-VAE + Masked Iterative Decoding (SoundStorm): The Quantization Bottleneck
+
+The SoundStorm/MaskGIT paradigm — start with all tokens masked, iteratively unmask
+in confidence order with full bidirectional context — was tested on our validated
+VQ-VAE codebook (1024 entries, 100% utilization, stall token 0).
+
+A 6M-parameter masked bidirectional transformer was trained for 16 epochs on 500K
+tokenized trajectories, reaching 49.3% masked token prediction accuracy. Four
+generation strategies were tested:
+
+- **From-scratch generation** (all MASK → iterative unmasking): AUC 0.996. Cold-start
+  collapse — the model predicts stall token 0 at every position with 37% confidence,
+  and confidence-based unmasking locks in all-stall sequences.
+- **Iterative refinement** (donor tokens → mask 40% → re-predict): AUC 0.996. Avoids
+  cold-start but spatial shape is still wrong after 12 refinement rounds.
+- **Soft decoding** (probability-weighted expected displacement instead of discrete
+  sampling): AUC 0.997. No improvement — the expected displacement is a compromise
+  that satisfies no constraint well.
+- **Donor token perturbation** (keep most donor tokens, mask a few, SoundStorm fills):
+  AUC 0.914. Even with minimal replacement, accumulated quantized tokens create
+  detectably wrong paths.
+
+The root cause is the VQ-VAE displacement tokenization itself, not the sequence model.
+When discrete tokens are accumulated to reconstruct paths, the 1024-entry codebook
+quantization destroys spatial smoothness. Curvature, angular velocity, and path
+efficiency are all wrong because each step's displacement is snapped to the nearest
+codebook entry, and these quantization errors compound over 50-200 steps.
+
+This finding updates the assessment from Section 5.5: while VQ-VAE tokens correctly
+match the problem's mixed discrete-continuous structure in principle (stall token = 0,
+motion tokens = continuous motion), the codebook quantization of the continuous
+component is too coarse for path accumulation. The 30 px/s speed reconstruction error
+(3.6% of mean speed) — acceptable for single-step reconstruction — compounds to create
+fundamentally wrong path shapes when accumulated.
+
+**Architectural implication**: The next approach must keep displacements continuous
+(no VQ-VAE) while still handling stalls as discrete events. This points to hybrid
+discrete-continuous diffusion (CANDI-style): a single denoiser with a discrete
+masking channel for stall/no-stall decisions and a continuous Gaussian channel for
+(dx, dy) displacement.
+
+### 5.10 Chunk-Level Diffusion: The Global Awareness Problem
+
+Action chunking — generating 25-step chunks via DDPM and sequencing them
+autoregressively — was tested as a middle ground between per-step AR (ZIMT) and
+full-trajectory diffusion (DDPM). The hypothesis: 25-step chunks are long enough
+to produce coherent internal kinematics while reducing compounding error from
+200 decision points to ~8.
+
+The result was AUC 0.957 — significantly worse than both ZIMT (0.864) and DDPM
+(0.862). The primary failure mode was `velocity_skewness` at 1.764 Wasserstein,
+the worst of any model. The root cause: each chunk generates in isolation with
+only a 5-step context window and scalar progress/remaining-fraction conditioning.
+No chunk knows whether it sits at 20% of the trajectory (peak acceleration phase)
+or 80% (deceleration tail), because the model has no representation of the
+global velocity profile shape.
+
+This failure eliminates the middle ground between per-step and full-sequence
+approaches. The conclusion: the next architecture must have full-sequence context
+at every generation step, pointing to bidirectional approaches (masked iterative
+decoding) rather than any form of autoregressive sequencing.
+
+### 5.11 Three-Pattern Failure Analysis: A Unified Root Cause
+
+After 150+ experiments across 8 model families, a synthesis of all failure modes
+reveals that three persistent gaps trace to the same underlying mechanism:
+incorrect generation of the stall boundary pattern (decelerate → hold → change
+heading → accelerate).
+
+**Pattern 1 — velocity_skewness** (Wasserstein 0.08-1.76 across models):
+Velocity skewness measures the asymmetry of the full-trajectory speed
+distribution. Humans peak at ~35% of duration with a long deceleration tail
+(skewness ~1.0). This is a global property — no local window (per-step or
+per-chunk) encodes the global velocity envelope. Only full-trajectory approaches
+(DDPM, SoundStorm) preserve this.
+
+**Pattern 2 — angular_velocity** (Wasserstein 0.41-0.78 across models):
+Angular velocity in human data comes primarily from heading changes at stall
+boundaries, not from smooth curves. The deceleration phase brings speed near
+zero, the hand stops (1-5 samples of exact zero displacement), heading shifts
+5-30 degrees, then the hand accelerates in the new direction. The only model
+that matched human angular velocity (42.7 vs 45.8 rad/s) was VQ-VAE with
+discrete stall tokens — confirming that discrete zero-displacement events, not
+continuous path curvature, are the source.
+
+**Pattern 3 — acceleration-jerk decorrelation** (human r=-0.025, synthetic
+r=0.999): In smooth continuous trajectories, jerk is approximately the
+derivative of acceleration, creating near-perfect correlation (r≈1.0). In
+human data, jerk spikes at stall boundaries (abrupt acceleration changes
+between smooth ballistic segments) break this correlation. Only exact-zero
+stalls followed by heading changes produce these decorrelating spikes.
+
+All three patterns point to the same architectural requirement: a model with
+(a) discrete stall tokens for exact zero displacement, (b) full-sequence
+context for global velocity profile awareness, and (c) bidirectional attention
+so stall boundary tokens are generated with context from both sides. This
+combination uniquely describes the SoundStorm/MaskGIT masked iterative
+decoding paradigm applied to our validated VQ-VAE codebook.
 
 ---
 
@@ -981,7 +1086,7 @@ continuous-discrete structure observed in the data.
 | Human trajectory corpus size | 4.16M trajectories | 5 public HCI datasets |
 | Evaluation features | 18 kinematic features | See Section 2 |
 | Corpus replay AUC | 0.52 (4.16M pool, mean of 3 seeds) | Practical floor |
-| Best fully generative AUC | 0.864 | ZIMT + magnitude-weighted correction |
+| Best fully generative AUC | 0.852 | CANDI polar hybrid diffusion |
 | Best retrieval+transform AUC | 0.686 | Corpus rotate (rotation + scale) |
 | Previous best generative | 0.892 | VQ-VAE + GRPO (checkpoint lost) |
 | Perturbed replay AUC | 0.55 (2% noise) | Section 6 |
@@ -991,13 +1096,16 @@ continuous-discrete structure observed in the data.
 | Human mean velocity | ~960 px/s | Corpus statistics |
 | Human max velocity CV | ~34x | Extreme peaks |
 | Human curvature mean | ~1329 | Dominated by stall events |
-| Best generative curvature | ~7-15 | 100-200x gap |
+| Best generative curvature | ~1300 (CANDI polar) | Gap nearly closed |
 | Zero-displacement steps | 6.14% of all steps | Discrete stall events |
 | Stall duration | 1-5 samples (8-40ms) | Fixed USB polling intervals |
 | Timing residual autocorrelation | r = 0.65 | Motor control smoothness |
 | Peak velocity location | ~35% of duration | Universal, distance-independent |
-| Experiments conducted | 150+ | See EXPERIMENTS.md |
-| Model architectures tested | 8 families | See Section 5 |
+| Chunk diffusion AUC | 0.957 | No global velocity awareness |
+| SoundStorm/MaskGIT AUC | 0.996 | VQ-VAE quantization bottleneck |
+| Enhanced corpus rotate AUC | 0.670 | Best rotation variant (K=50) |
+| Experiments conducted | 160+ | See EXPERIMENTS.md |
+| Model architectures tested | 10 families | See Section 5 |
 
 ---
 
