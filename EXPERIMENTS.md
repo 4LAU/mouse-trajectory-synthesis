@@ -2354,3 +2354,46 @@ sampling still draws characters from real data. Low learning rate 1e-5,
 default 3000 steps, snapshots every 500 so the eval can pick the best
 point on the gain-versus-drift curve. A --real-frac flag can mix real
 batches back in as an anchor if pure self-corpus training drifts.
+
+## Distillation verdict: fails at every depth, and the control finds a new pure best (July 6, 13:20)
+
+The corpus came out healthy: all 20,000 specs selected, log-odds and ESS
+stats flat across all ten blocks (logw mean -2.35, ESS median ~10.7 of
+16), 2300 s per block. Fine-tuning ran 3000 steps in 17 minutes, loss
+easing 3.54 to 3.22 with no instability. Then the snapshot evals, pure
+model, no SIR, seed 42, all with the locked serving env (gumbel, choice
+temp 10, snap 2.5, dur std 1.0, empirical duration prior):
+
+| checkpoint | RF OOB AUC |
+|---|---|
+| fc_v2 control (no distillation) | 0.6470 |
+| distill s500 | 0.6802 |
+| distill s1000 | 0.6965 |
+| distill s2000 | 0.6936 |
+| distill s3000 | 0.6932 |
+
+Every distilled checkpoint is worse than the model it started from, and
+the damage is nearly done by step 500. Distillation on this
+architecture does not transfer the judge's preference; it just moves
+the model off the real-data manifold it was pretrained on. The likely
+mechanism is the same one that killed the adversarial and DM fine-tunes:
+the masked-token objective teaches marginal token distributions, but SIR
+winners win on joint feature combinations of the whole decoded
+trajectory. Training on winners nudges marginals the sampler then
+recombines freely, losing exactly the joint structure that made them
+winners, while the model drifts away from real-token statistics it was
+anchored to.
+
+The control run is the real news. Pure fc_v2 with DUR_EMPIRICAL=1
+scores 0.6470 at seed 42, against 0.675 +/- 0.002 without it. The
+empirical duration prior had only ever been tested inside the SIR
+system, where it was one of the three selection-side wins. It turns out
+it helps the bare model just as much: the fitted lognormal duration
+prior was feeding the model out-of-distribution durations, and fixing
+the prior is a T3-legal conditioning correction, no picker involved.
+New best pure single-net result, pending multi-seed confirmation.
+
+Two follow-ups queued: seeds 43 and 44 of the pure control, and one
+distillation rerun with --real-frac 0.5 mixing real human batches back
+in as an anchor. If the anchored version still lands above the control,
+CE-based distillation is dead on this architecture, not just drifted.
