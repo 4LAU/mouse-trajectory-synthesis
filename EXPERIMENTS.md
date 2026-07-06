@@ -2452,3 +2452,11 @@ adversarial slot up a day: the classic adversarial axis is dead three
 ways, and this is the strongest remaining mechanism against the same
 wall. Pipeline: 6000-spec pair corpus (~2h), 1500 training steps,
 snapshot evals every 250 steps, queued behind the two SIR probes.
+
+Hardware note, July 6 14:15: fourth bluescreen of the week under GPU
+load (bugcheck 0x1E, access violation; the three during the 4M pretrain
+each showed different codes, the signature of flaky RAM or heat rather
+than software). Cost 25 minutes of one eval. Every pipeline here is
+crash-safe by construction (skip-if-done shards and logs), which is the
+reason these losses stay small; the whole queue relaunched sequentially
+at 14:41.
