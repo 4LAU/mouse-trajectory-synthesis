@@ -111,6 +111,11 @@ _SIR_TREES = int(os.environ.get("EVENT_SIR_TREES", "200"))
 # accumulated weight, then redraw. Boosting-style density-ratio refinement
 # on the same candidate pool; costs CPU only. 1 = plain SIR.
 _SIR_ITER = int(os.environ.get("EVENT_SIR_ITER", "1"))
+# Resample the duration independently for each SIR candidate instead of
+# sharing one draw across all K. Duration is not part of the spec, and the
+# detector weights movement_duration heavily, so letting the judge choose
+# among (duration, path) combinations adds a selection axis for free.
+_SIR_DUR_DIVERSE = os.environ.get("EVENT_SIR_DUR_DIVERSE", "0") == "1"
 assert not (_BESTOF > 1 and _SIR_K > 1), "EVENT_BESTOF and EVENT_SIR are exclusive"
 
 print(f"[event_stream_polar] ckpt={_ckpt_name} epoch={_ckpt.get('epoch')} "
@@ -190,10 +195,18 @@ def generate_paths(specs: list) -> list:
     chunk_size = max(_EVAL_BATCH // max(K, K_sir), 1)
     for c0 in range(0, len(pending), chunk_size):
         chunk = pending[c0:c0 + chunk_size]
-        cond = torch.tensor([it["cond"] for it in chunk],
-                            dtype=torch.float32, device=_DEVICE)
-        if K_sir > 1:
-            cond = cond.repeat_interleave(K_sir, dim=0)
+        if K_sir > 1 and _SIR_DUR_DIVERSE:
+            rows = []
+            for it in chunk:
+                ld, _, ca, sa = it["cond"]
+                for _ in range(K_sir):
+                    rows.append([ld, math.log(_duration.sample(ld)), ca, sa])
+            cond = torch.tensor(rows, dtype=torch.float32, device=_DEVICE)
+        else:
+            cond = torch.tensor([it["cond"] for it in chunk],
+                                dtype=torch.float32, device=_DEVICE)
+            if K_sir > 1:
+                cond = cond.repeat_interleave(K_sir, dim=0)
         feat = None
         if _FEAT_BANK is not None:
             B = cond.shape[0]

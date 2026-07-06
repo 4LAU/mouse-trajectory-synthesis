@@ -46,6 +46,11 @@ SIR_TEMP = float(os.environ.get("DISTILL_SIR_TEMP", "0.7"))
 N_SPECS = int(os.environ.get("DISTILL_SPECS", "20000"))
 BLOCK = int(os.environ.get("DISTILL_BLOCK", "2000"))
 SEED = int(os.environ.get("DISTILL_SEED", "20260706"))
+# SAVE_LOSER=1 also stores the judge's lowest-scored candidate per spec,
+# for preference training (winner vs loser pairs). Shards get a different
+# prefix so pair corpora never mix with plain distillation corpora.
+SAVE_LOSER = os.environ.get("DISTILL_SAVE_LOSER", "0") == "1"
+PREFIX = "distill_pairs" if SAVE_LOSER else "distill_corpus"
 OUT_DIR = Path(__file__).resolve().parent
 
 
@@ -64,7 +69,7 @@ def sanitize(dt_row, s_row, th_row):
 
 
 def run_block(bi, specs, X_hum, rng):
-    shard = OUT_DIR / f"distill_corpus_b{bi:02d}.npz"
+    shard = OUT_DIR / f"{PREFIX}_b{bi:02d}.npz"
     if shard.exists():
         print(f"SKIP block {bi} (shard exists)", flush=True)
         return
@@ -150,6 +155,8 @@ def run_block(bi, specs, X_hum, rng):
         per_spec.setdefault(owner, []).append(ci)
 
     sel_dt, sel_s, sel_th, sel_cond, sel_len = [], [], [], [], []
+    los_dt, los_s, los_th, los_len = [], [], [], []
+    sel_lw, los_lw = [], []
     ess_all = []
     for owner, cis in per_spec.items():
         lw = logw[cis] / SIR_TEMP
@@ -157,23 +164,50 @@ def run_block(bi, specs, X_hum, rng):
         p_ /= p_.sum()
         ess_all.append(1.0 / np.sum(p_ ** 2))
         g = rng.gumbel(size=len(cis))
-        ci = cis[int(np.argmax(lw + g))]
+        # pairs want max contrast (best vs worst); imitation wants the
+        # variety-preserving lottery draw
+        win = int(np.argmax(lw)) if SAVE_LOSER else int(np.argmax(lw + g))
+        ci = cis[win]
         dt, s, th, L = sanitize(np.asarray(cand_dt[ci], dtype=np.float32),
                                 np.asarray(cand_s[ci]), np.asarray(cand_th[ci]))
         if L < 2:
             continue
+        if SAVE_LOSER:
+            # max contrast: the judge's lowest-scored candidate of the pool
+            lo = int(np.argmin(lw))
+            if lo == win and len(cis) < 2:
+                continue
+            cl = cis[lo]
+            dtl, sl, thl, Ll = sanitize(
+                np.asarray(cand_dt[cl], dtype=np.float32),
+                np.asarray(cand_s[cl]), np.asarray(cand_th[cl]))
+            if Ll < 2:
+                continue
+            los_dt.append(dtl)
+            los_s.append(sl)
+            los_th.append(thl)
+            los_len.append(Ll)
+            sel_lw.append(logw[ci])
+            los_lw.append(logw[cl])
         sel_dt.append(dt)
         sel_s.append(s)
         sel_th.append(th)
         sel_cond.append(cand_cond[owner])
         sel_len.append(L)
 
-    np.savez(shard,
-             dt_z=np.stack(sel_dt),
-             s_cls=np.stack(sel_s).astype(np.int16),
-             th_cls=np.stack(sel_th).astype(np.int16),
-             cond=np.asarray(sel_cond, dtype=np.float32),
-             length=np.asarray(sel_len, dtype=np.int32))
+    out = dict(dt_z=np.stack(sel_dt),
+               s_cls=np.stack(sel_s).astype(np.int16),
+               th_cls=np.stack(sel_th).astype(np.int16),
+               cond=np.asarray(sel_cond, dtype=np.float32),
+               length=np.asarray(sel_len, dtype=np.int32))
+    if SAVE_LOSER:
+        out.update(dt_z_l=np.stack(los_dt),
+                   s_cls_l=np.stack(los_s).astype(np.int16),
+                   th_cls_l=np.stack(los_th).astype(np.int16),
+                   length_l=np.asarray(los_len, dtype=np.int32),
+                   logw_w=np.asarray(sel_lw, dtype=np.float32),
+                   logw_l=np.asarray(los_lw, dtype=np.float32))
+    np.savez(shard, **out)
     ess = np.asarray(ess_all)
     print(f"block {bi}: {len(sel_len)}/{len(specs)} selected | "
           f"logw mean={logw.mean():+.2f} std={logw.std():.2f} | "

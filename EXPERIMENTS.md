@@ -2422,3 +2422,33 @@ it. This is the same wall that killed the DM and adversarial
 fine-tunes, seen from a third side. The picker stays an inference-time
 system: "undetectable system" (0.5607 single-seed, 0.596 +/- 0.005
 honest) versus "undetectable model" (0.652 +/- 0.003).
+
+## Preference learning: the one distillation variant with a different mechanism (July 6, 14:30)
+
+Imitation distillation is closed, but it tested only one way of using
+the judge's signal: maximize likelihood of winners. The untested way is
+preference learning: for each spec, keep the judge's best AND worst of
+the K candidates, and train with the Diffusion-DPO objective, lower the
+denoising loss on the winner and raise it on the loser relative to a
+frozen reference copy of the model. Three reasons this can work where
+imitation could not. The gradient is a contrast between two whole
+sequences from the same pool, which is the trajectory-level judgment
+SIR actually applies, not a marginal-token imitation target. The
+reference model anchors the update, an implicit KL leash against the
+manifold drift that both plain and anchored imitation showed. And no
+sampling happens inside the training loop, so the straight-through
+Gumbel gradient path that killed all three adversarial fine-tunes is
+not involved.
+
+Build: make_distill_corpus.py grew a DISTILL_SAVE_LOSER=1 mode (pairs
+get max contrast: winner = argmax judge log-odds, loser = argmin, no
+lottery), training/train_events_polar_dpo.py implements the paired
+loss with one shared corruption level per pair for variance reduction,
+dt head frozen as always. Smoke test: DPO loss starts at log 2 = 0.70
+and preference accuracy at 0.5, exactly what an untrained-but-correct
+DPO setup shows when policy equals reference; judge gap median 2.45
+logits per pair, so the contrast signal is there. This moves the July 7
+adversarial slot up a day: the classic adversarial axis is dead three
+ways, and this is the strongest remaining mechanism against the same
+wall. Pipeline: 6000-spec pair corpus (~2h), 1500 training steps,
+snapshot evals every 250 steps, queued behind the two SIR probes.
