@@ -2460,3 +2460,19 @@ than software). Cost 25 minutes of one eval. Every pipeline here is
 crash-safe by construction (skip-if-done shards and logs), which is the
 reason these losses stay small; the whole queue relaunched sequentially
 at 14:41.
+
+## Two stacking probes on the locked recipe (July 6, 16:00)
+
+Wider character bandwidth (EVENT_FEAT_BW=0.5, a clear solo winner at
+0.5761) stacked onto the locked recipe: 0.5619 vs 0.5607, a tie. The
+sharper selection temperature already harvests whatever the wider
+draws offered; the two knobs were picking the same fruit.
+
+Per-candidate duration diversity (EVENT_SIR_DUR_DIVERSE=1, new knob):
+all K candidates previously shared one duration draw per spec, so the
+judge could choose among paths but never among durations, a feature
+family the detector weights heavily. Resampling the duration for each
+candidate: 0.5589 vs 0.5607. Within single-seed noise, but it is the
+best single-seed number on record, the mechanism is sound, and the
+cost is zero, so it joins the recipe pending the multi-seed
+confirmation. Seeds 43 and 44 queued for tonight.
