@@ -51,6 +51,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=42,
         help="RNG seed for reproducibility (default: 42)",
     )
+    parser.add_argument(
+        "--no-raw-nn",
+        action="store_true",
+        help="Skip the raw-trajectory neural detector",
+    )
     return parser.parse_args(argv)
 
 
@@ -59,16 +64,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 # ---------------------------------------------------------------------------
 
 def load_experiment(module_path: str):
-    """Dynamically import an experiment module and return its generate_path function."""
+    """Dynamically import an experiment module and return it."""
     module = importlib.import_module(module_path)
     if not hasattr(module, "generate_path"):
         print(f"ERROR: module '{module_path}' has no generate_path function", file=sys.stderr)
         sys.exit(1)
-    return module.generate_path
+    return module
 
 
 def generate_synthetic_trajectories(
-    generate_path,
+    module,
     distances: np.ndarray,
     n: int,
     rng: np.random.Generator,
@@ -77,24 +82,33 @@ def generate_synthetic_trajectories(
 
     Each trajectory starts at screen centre (960, 540).  The travel distance is
     sampled from *distances* (the empirical human distribution) and the angle is
-    uniformly random.
+    uniformly random.  If the module exports generate_paths (batched), it is
+    used; otherwise trajectories are generated one at a time.
     """
     center_x, center_y = 960.0, 540.0
-    trajectories: list = []
 
-    for i in range(n):
+    specs = []
+    for _ in range(n):
         dist = float(rng.choice(distances))
         angle = float(rng.uniform(0, 2 * np.pi))
         end_x = center_x + dist * np.cos(angle)
         end_y = center_y + dist * np.sin(angle)
+        specs.append((center_x, center_y, end_x, end_y))
 
+    if hasattr(module, "generate_paths"):
+        print("  Using batched generation")
+        raw = module.generate_paths(specs)
+        return [t for t in raw if t is not None and len(t) >= 2]
+
+    generate_path = module.generate_path
+    trajectories: list = []
+    for i, (sx, sy, ex, ey) in enumerate(specs):
         try:
-            traj = generate_path(center_x, center_y, end_x, end_y)
+            traj = generate_path(sx, sy, ex, ey)
         except Exception as exc:  # noqa: BLE001
             if i == 0:
                 print(f"  WARNING: generate_path raised {type(exc).__name__}: {exc}")
             continue
-
         if traj is not None and len(traj) >= 2:
             trajectories.append(traj)
 
@@ -114,6 +128,24 @@ def print_wasserstein_diagnostics(human_features: np.ndarray, synth_features: np
     for name, d in ranked:
         flag = "  *** HIGH ***" if d > 0.3 else ""
         print(f"  {name:30s} {d:.4f}{flag}")
+    print()
+
+
+def print_correlation_gaps(human_features: np.ndarray, synth_features: np.ndarray, top_k: int = 10) -> None:
+    """Print feature pairs with largest correlation structure differences."""
+    n = len(FEATURE_NAMES)
+    h_corr = np.corrcoef(human_features.T)
+    s_corr = np.corrcoef(synth_features.T)
+    gaps = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            diff = abs(h_corr[i, j] - s_corr[i, j])
+            gaps.append((FEATURE_NAMES[i], FEATURE_NAMES[j],
+                         h_corr[i, j], s_corr[i, j], diff))
+    gaps.sort(key=lambda x: x[4], reverse=True)
+    print(f"--- Top {top_k} correlation structure gaps ---")
+    for a, b, hr, sr, d in gaps[:top_k]:
+        print(f"  {a:25s} × {b:25s}  human={hr:+.3f}  synth={sr:+.3f}  gap={d:.3f}")
     print()
 
 
@@ -144,14 +176,14 @@ def main(argv: list[str] | None = None) -> None:
           f"{len(human_distances)} distance samples")
 
     # 2. Import experiment
-    generate_path = load_experiment(args.experiment)
+    module = load_experiment(args.experiment)
     print(f"Experiment: {args.experiment}")
 
     # 3. Generate synthetic trajectories
     n = args.n_synthetic
     print(f"Generating {n} synthetic trajectories …")
     t0 = time.perf_counter()
-    trajectories = generate_synthetic_trajectories(generate_path, human_distances, n, rng)
+    trajectories = generate_synthetic_trajectories(module, human_distances, n, rng)
     elapsed = time.perf_counter() - t0
     print(f"  Generated {len(trajectories)} trajectories in {elapsed:.1f}s")
 
@@ -178,6 +210,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # 7. Wasserstein diagnostics
     print_wasserstein_diagnostics(human_balanced, synth_balanced)
+    print_correlation_gaps(human_balanced, synth_balanced)
 
     # 8. Train adversarial classifiers
     X = np.vstack([human_balanced, synth_balanced])
@@ -213,11 +246,24 @@ def main(argv: list[str] | None = None) -> None:
     # 9. Feature importances
     print_feature_importances(clf)
 
-    # 10. Final results
+    # 10. Raw-trajectory neural detector (held-out, never tuned against)
+    auc_raw_nn = None
+    if not args.no_raw_nn:
+        try:
+            from detector_raw import raw_nn_auc
+            t0 = time.perf_counter()
+            auc_raw_nn = raw_nn_auc(trajectories)
+            print(f"  Raw-NN detector trained in {time.perf_counter() - t0:.1f}s")
+        except FileNotFoundError as exc:
+            print(f"  Raw-NN detector skipped (missing data: {exc})")
+
+    # 11. Final results
     print(f"val_auc: {auc_rf_oob:.4f}")
     print(f"  RF OOB AUC:      {auc_rf_oob:.4f}")
     print(f"  RF 5-fold CV:    {auc_rf_cv:.4f}")
     print(f"  GBM 5-fold CV:   {auc_gbm_cv:.4f}")
+    if auc_raw_nn is not None:
+        print(f"  Raw-NN 3-fold:   {auc_raw_nn:.4f}")
 
 
 if __name__ == "__main__":
