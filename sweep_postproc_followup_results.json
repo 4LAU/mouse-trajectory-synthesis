@@ -1,0 +1,42 @@
+[
+ {
+  "skew": 0.0,
+  "perp": 1.0,
+  "guide": 0.15,
+  "seed": null,
+  "rf_oob": 0.7627,
+  "gbm_cv": 0.7813,
+  "raw_nn": null,
+  "secs": 209
+ },
+ {
+  "skew": 0.0,
+  "perp": 1.0,
+  "guide": 0.3,
+  "seed": null,
+  "rf_oob": 0.7557,
+  "gbm_cv": 0.7784,
+  "raw_nn": null,
+  "secs": 203
+ },
+ {
+  "skew": 0.0,
+  "perp": 0.85,
+  "guide": 0.15,
+  "seed": 43,
+  "rf_oob": 0.7503,
+  "gbm_cv": 0.7825,
+  "raw_nn": 0.5823,
+  "secs": 225
+ },
+ {
+  "skew": 0.0,
+  "perp": 0.85,
+  "guide": 0.15,
+  "seed": 44,
+  "rf_oob": 0.7591,
+  "gbm_cv": 0.7848,
+  "raw_nn": 0.5528,
+  "secs": 199
+ }
+]

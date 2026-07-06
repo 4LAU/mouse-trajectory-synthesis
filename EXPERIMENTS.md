@@ -1258,7 +1258,8 @@ movement_duration 0.080, mean_acceleration 0.072).
 | Corpus Rotate (K=5) | 0.686 | Retrieval + transform | Less donor diversity |
 | Corpus Sim | 0.682 | Retrieval + transform | Same mechanism as rotate |
 | DDPM + borrowed timing | 0.820 | Hybrid (not generative) | Proves DDPM path is OK |
-| **CANDI polar (30ep, CFG=0)** | **0.852** | **Generative** | **New best neural generative** |
+| **CANDI polar flow (21ep)** | **0.854** | **Generative** | **Best generative. Flow matching.** |
+| CANDI polar DDIM (30ep, CFG=0) | 0.852 | Generative | DDIM baseline |
 | ZIMT magcorr | 0.864 | Generative | Previous best generative |
 | ZIMT FM (50 iter) | 0.870 | Generative | Exposure bias worsened it |
 | ZIMT baseline | 0.878 | Generative | Original ZIMT |
@@ -1275,7 +1276,7 @@ movement_duration 0.080, mean_acceleration 0.072).
 
 | # | Architecture | Status | AUC | Failure Mode |
 |---|-------------|--------|-----|-------------|
-| 1 | **CANDI hybrid diffusion** | **BEST** | **0.852** | **New best. Angular velocity + curvature remain.** |
+| 1 | **CANDI hybrid diffusion** | **BEST** | **0.854** | **Best generative. Angular velocity + curvature remain.** |
 | 2 | Action Chunking | FAILED | 0.957 | No global velocity awareness |
 | 3 | SoundStorm/MaskGIT | FAILED | 0.996 | VQ-VAE quantization bottleneck |
 | 4 | Decoupled Shape+Speed | Untried | — | Partially validated by v147 |
@@ -1284,3 +1285,841 @@ movement_duration 0.080, mean_acceleration 0.072).
 | 7 | Neural SDE | Untried | — | Can't produce exact stalls |
 | 8 | Energy-Guided Diffusion | Untried | — | Numerically unstable near stalls |
 | 9 | Mamba | Untried | — | Likely incremental over ZIMT |
+
+## Flow Matching + Post-Processing Optimization (2026-05-30)
+
+### Training Objective: DDIM → Flow Matching
+
+Replaced 1000-step cosine-schedule DDIM with flow matching. Linear interpolation
+x_t = (1-t)·x_0 + t·ε, 200-step Euler ODE sampling. Same Transformer backbone (5,794,819 params).
+Training on 500K trajectories, polar (speed, Δheading), heading-flip augmentation.
+
+Training ongoing (epoch 23/80). Best val_cont = 1.220 at epoch 21.
+
+### Post-Processing Sweep (30+ experiments on epoch 14 checkpoint)
+
+All 18 kinematic features derive from the same trajectory. Improving one feature via
+post-processing systematically degrades others. This is the fundamental ceiling of
+inference-time corrections.
+
+**Working parameters (small consistent benefit):**
+
+| Parameter | Effect | Optimal |
+|-----------|--------|---------|
+| SPEED_SKEW | Time-warps speed profile: t^(1/(1+k)) | Shifts with training (0.3 → 0.1) |
+| PERP_SCALE | Compresses perpendicular displacement | 0.7 |
+| GUIDE | Directional guidance during ODE sampling | 0.3 |
+| CORRECT=rotate | Endpoint correction via rotation+scaling | Always > additive |
+
+**Dead-end parameters (all net negative at every tested value):**
+DH_AMP, PERP_HP, FLOW_NOISE, SPEED_RAMP, JITTER, DH_OU, SPEED_SKEW_SCALE, RESIDUAL_VEL.
+Each improves its target metric but degrades others through feature coupling.
+
+### Parameter Shift: Post-Processing Invalidated by Model Improvement
+
+As the model trains longer, it learns speed asymmetry internally. Post-processing
+parameters optimized for epoch 14 become harmful on epoch 19:
+
+| Config | AUC (n=100) | Notes |
+|--------|-------------|-------|
+| Epoch 14, skew=0.3+perp=0.7 | 0.533 | Optimal at epoch 14 |
+| Epoch 19, skew=0.3+perp=0.7 | 0.734 | Same config over-corrects |
+| Epoch 19, raw (no post-proc, no guide) | 0.527 | Model improved enough to need less help |
+| Epoch 19, skew=0.3 only | 0.526 | Mild skew still helps |
+
+Post-processing must be re-swept at each training milestone. Combined corrections
+(skew+perp) over-correct on improved checkpoints.
+
+**N=100 AUC is systematically optimistic.** The RF needs ~2000 samples to detect subtle
+artifacts. Cartesian showed 0.86 at n=200 → 0.95 at n=2000. Use n=100 only for
+relative ranking between configs.
+
+### Definitive Evaluation (n=2000, epoch 19)
+
+| Config | AUC (n=2000) | Notes |
+|--------|-------------|-------|
+| skew=0.3+perp=0.7, guide=0.3 | 0.854 | Old config, over-corrected |
+
+Re-optimized config N=2000 evaluation pending.
+
+### Remaining Gaps (n=2000, epoch 19)
+
+| Feature | Wasserstein | RF Importance |
+|---------|------------|---------------|
+| angular_velocity_std | 0.379 | 0.066 |
+| angular_velocity_mean | 0.332 | 0.062 |
+| path_efficiency | 0.291 | — |
+| curvature_std | 0.232 | 0.067 |
+| max_deviation | 0.231 | — |
+| curvature_mean | 0.186 | 0.070 |
+| time_to_peak_velocity | 0.171 | 0.058 |
+| mean_jerk | 0.029 | **0.131** |
+| mean_acceleration | 0.030 | 0.055 |
+
+mean_jerk is the #1 RF discriminator despite low Wasserstein distance. The correlation
+structure is broken: human mean_acc × mean_jerk = +1.000, synthetic = -0.742 (gap 1.74).
+
+**Root cause:** mean_acceleration = mean(Δspeed/Δt) telescopes to (speed_end - speed_start)/T
+for constant dt. Rest-to-rest trajectories → mean_acc ≈ 0 regardless of speed scale. Human
+data includes partial movements where mean_acc ≠ 0, creating speed-dependent signed
+acceleration that the model cannot replicate.
+
+### N=100 vs N=2000 Reliability Problem
+
+The N=100 sweep showed AUCs of 0.526-0.527 for top configs, suggesting the model was near
+0.50. The N=2000 eval revealed the true AUC is **0.854** — a 0.33 discrepancy. The RF at
+N=100 simply lacks enough data to detect subtle systematic artifacts.
+
+This invalidates all N=100-based optimization done to date. A reliable proxy metric is needed
+before further optimization — one that's stable at small N and predicts N=2000 AUC.
+
+### Next Steps
+
+**1. Proxy metric (highest priority).** Build a deterministic feature-matching score
+(sum of Wasserstein distances + correlation matrix Frobenius norm) that's stable at N=100.
+Script created (`proxy_metric_validation.py`), needs to complete its 2000-trajectory
+generation run. Once validated, this replaces RF AUC for rapid iteration.
+
+**2. Training augmentations.** Current training uses only heading-flip. Key untapped
+augmentations:
+- `--heading-scale 0.15`: augments heading magnitude range. Directly targets angular velocity
+  gap (Wasserstein 0.38). Training started from epoch 23 checkpoint.
+- `--heading-noise`: OU-process on delta_heading. Could improve curvature.
+- `--path-weight`: auxiliary loss matching path_efficiency distribution.
+
+**3. Longer training.** Model improved steadily through epoch 23 (val_cont 1.26 → 1.22).
+Continue to epoch 80. Re-evaluate with proxy at each milestone.
+
+**4. Structural fix for correlation gap.** The mean_acc telescoping issue requires either:
+partial-movement conditioning (non-zero start/end speeds), data augmentation with partial
+movements, or accepting the correlation gap and focusing on other features.
+
+**5. Feature-aware training loss.** Add auxiliary losses during training that match
+batch-level angular velocity and curvature statistics against human targets. The path_loss
+infrastructure already reconstructs trajectories from polar predictions — extend to
+angular velocity matching.
+
+---
+
+## 2026-07-01: Evaluation Overhaul and Baseline Re-Measurement
+
+### Batched generation: n=2000 eval now takes 4 minutes instead of 100
+
+The definitive eval on May 30 spent 5703s generating 2000 trajectories one at a time,
+200 sampler steps each. Added `generate_paths` to `experiments/candi.py`: requests are
+grouped by sequence length and run through the sampler in batches of up to 128. Same
+sampler code, same per-trajectory decode and post-processing. Generation now takes 188s.
+The proxy-metric plan from the previous entry is dead: full n=2000 evals are cheap enough
+to use for every decision.
+
+### Baseline re-measured: 0.829, not 0.854 (n=2000, 3 seeds)
+
+CANDI polar flow (candi_polar_flow_best.pt), skew=0.3 perp=0.7 guide=0.3 correct=rotate
+steps=200 CFG=0, batched generation:
+
+| Seed | RF OOB | GBM 5-fold CV |
+|------|--------|---------------|
+| 42 | 0.8315 | 0.8521 |
+| 43 | 0.8296 | 0.8501 |
+| 44 | 0.8261 | 0.8559 |
+
+Run-to-run spread is about 0.003, so n=2000 comparisons are trustworthy down to roughly
+0.005 differences. The May 30 sequential run recorded 0.8537 with nominally the same
+config. The gap is under investigation (parity check pending); the full environment of
+the old run was not recorded, so 0.829 +/- 0.003 from the current committed code is now
+the reference baseline.
+
+### New held-out detector: raw-trajectory CNN (never tuned against)
+
+`detector_raw.py`: a small 1D CNN on resampled, distance-normalized (dx, dy) sequences,
+human side drawn from the 208K held-out test split. 3-fold CV, fixed hyperparameters,
+runs automatically inside evaluate.py. Sanity check human-vs-human gives 0.48.
+
+First reading on the baseline model: **raw-NN AUC 0.600** while the feature RF sees 0.83.
+The raw local structure of generated trajectories is much harder to detect than the
+18 aggregate features. The remaining gap is concentrated in feature-level statistics,
+not in local waveform texture.
+
+### The May 30 fine-tunes all hurt (n=2000, same eval config as baseline)
+
+The speedaug and hscale fine-tune runs died mid-training on May 30 and were never judged
+at full sample size. Verdict:
+
+| Checkpoint | RF OOB | GBM CV | Raw-NN | vs baseline 0.829 |
+|-----------|--------|--------|--------|-------------------|
+| speedaug_best (DDIM, ep 34) | 0.9243 | 0.9374 | 0.591 | much worse |
+| speedaug_gentle (DDIM) | 0.8883 | 0.9078 | 0.597 | worse |
+| flow_hscale (ep 24) | 0.8389 | 0.8644 | 0.601 | worse |
+
+Every fine-tune launched from N=100 sweep evidence made things worse at n=2000. Do not
+resume any of them. Baseline stays candi_polar_flow_best.pt (epoch 21).
+
+Sequential vs batched parity: same 300 endpoint specs through both paths, per-feature
+Wasserstein all at or below 0.10, which is n=300 sampling noise. No evidence the batched
+path changes the distribution. Note the best checkpoint on disk is epoch 21; training
+continued past the epoch the old docs called best, overwriting the file, and the tuned
+post-processing knobs are stale for it.
+
+### Training speed: 780s to about 280s per epoch (2.8x)
+
+Profiling result: the per-sample polar conversion loop in the DataLoader was costing
+roughly 500s per epoch. Precomputed it once for all 500K trajectories
+(training/prepare_polar.py, 10 seconds, verified bit-exact against _to_polar) and taught
+train_candi.py to load the arrays when present. Dataloader cost drops to under 10s per
+epoch. The remaining floor is GPU compute: 72.5 ms per step at batch 128, seq 128, which
+is 266s per epoch on the 4070. Larger batches do not help (159 ms at 256) and batch 512
+peaks at 6.6 GB VRAM, too close to the 8 GB limit. torch.compile was skipped since
+Triton support on Windows is unreliable. Fine-tune epochs now cost about 5 minutes.
+
+### WS4 diagnostic, human side
+
+On 3000 held-out human trajectories: displacements after the standard 125Hz resample are
+not integer (mean distance to nearest integer 0.148 px, uniform would be 0.25), 35% of
+steps move less than 1 px, 4.8-6.0% are exact zeros. An integer-displacement output
+channel loses its premise (the eval field is not integer), but the sub-pixel step
+fraction is a concrete target: measure the same fraction on generated output next.
+
+### Post-processing re-sweep at n=2000: the old knobs were hurting badly
+
+Coordinate descent over the three post-processing knobs, every point a full n=2000 eval,
+epoch 21 checkpoint, CANDI_STEPS=200 CFG=0 CORRECT=rotate throughout. The incumbent
+values (skew 0.3, perp 0.7, guide 0.3) were tuned at N=100 on an older checkpoint.
+
+| skew | perp | guide | RF OOB | GBM CV |
+|------|------|-------|--------|--------|
+| 0.3 | 0.7 | 0.3 | 0.829 | 0.853 |
+| 0.2 | 0.7 | 0.3 | 0.8126 | 0.8422 |
+| 0.1 | 0.7 | 0.3 | 0.8162 | 0.8416 |
+| 0.0 | 0.7 | 0.3 | 0.7650 | 0.7981 |
+| 0.0 | 0.85 | 0.3 | 0.7613 | 0.7838 |
+| 0.0 | 0.85 | 0.15 | 0.7470 | 0.7710 |
+| 0.0 | 0.85 | 0.0 | 0.7690 | 0.7868 |
+| 0.0 | 1.0 | 0.0 (bare model) | 0.7584 | 0.7830 |
+
+Findings:
+
+1. Speed skew was the big lie. Turning it off alone is worth 0.064 AUC. The knob was
+   compensating for an epoch 14 weakness that epoch 21 no longer has, and at 0.3 it was
+   actively injecting a detectable artifact.
+2. The completely bare model (no skew, no perp compression, no feature guidance, only
+   the endpoint rotate correction) scores 0.7584. That is better than everything we had
+   ever measured, and it is essentially pure T3 model output.
+3. Descent winner: skew 0.0, perp 0.85, guide 0.15 at 0.7470. Held-out GBM moved in the
+   same direction at every point, so this is not RF gaming.
+4. This confirms standing rule 5 (post-processing params drift per checkpoint) in the
+   strongest possible way: every knob tuned at N=100 on the old checkpoint was either
+   useless or harmful at n=2000 on the current one.
+
+New best: RF OOB 0.7470 at n=2000 (pending 3-seed confirmation and raw-NN check).
+Previous best was 0.829. One sweep point (perp 1.0, guide 0.3) failed to parse and is
+being rerun alongside the untested (perp 1.0, guide 0.15) combo.
+
+### Follow-up: holes filled, winner confirmed across 3 seeds
+
+The two missing points: (skew 0, perp 1.0, guide 0.15) scored 0.7627 and the retried
+(skew 0, perp 1.0, guide 0.3) scored 0.7557. Neither beats the descent winner.
+
+Winner (skew 0, perp 0.85, guide 0.15) across seeds 42/43/44: RF OOB 0.7470, 0.7503,
+0.7591. Mean 0.752, spread 0.005. Held-outs on the confirmation seeds: GBM 0.78, raw-NN
+0.58 and 0.55 (baseline was 0.600). Every detector improved, none was tuned against
+except the RF.
+
+Summary of bests:
+- Best overall: skew 0, perp 0.85, guide 0.15, rotate correction. RF OOB 0.752 +/- 0.005.
+- Best pure T3 (no post-processing except rotate): bare model at 0.7584 single seed.
+  The 0.006 gap between them is near noise, so the model itself carries the result.
+
+### WS4 diagnostic, synth side (best config, n=1000, after standard resample)
+
+| Measure | Synth | Human |
+|---------|-------|-------|
+| Sub-pixel steps (<1 px) | 0.298 | 0.35 |
+| Exact-zero steps | 0.025 | 0.048 to 0.060 |
+| Mean distance to integer | 0.227 | 0.148 (0.25 = no grid structure) |
+
+Reading: the sub-pixel fraction is close, so the slow-tail premise is mostly satisfied
+already. Two real gaps remain. The model stalls half as often as humans, and its
+displacements are nearly grid-free (0.227, close to the 0.25 uniform value) while human
+data keeps visible pixel-grid structure even after resampling. The stall deficit is the
+more promising target since stalls are known to drive the angular and jerk features.
+
+### WS3 distribution-matching fine-tune: negative result, gate fired
+
+Built a distribution-matching fine-tune (training/train_candi_dm.py): the model generates
+short trajectories by unrolling the flow ODE with gradients on the last few steps, computes
+13 differentiable kinematic features on the batch, and minimizes a multi-bandwidth RBF MMD
+against real human batches. The standard flow-matching loss stays on as an anchor. This is
+the first time any model here trained directly on the quantity the detector measures.
+
+Ran 600 steps from candi_polar_flow_best.pt at lr 2e-5, batch 48, 8-step unroll. The MMD
+fell from 0.78 to about 0.16 in the first 40 steps then plateaued and never went lower.
+
+Result at n=2000 (candi_dm_v1.pt):
+
+| Config | RF OOB | GBM CV | Raw-NN | vs pre-tune |
+|--------|--------|--------|--------|-------------|
+| bare (skew 0, perp 1.0, guide 0) | 0.7726 | 0.8042 | 0.5765 | worse by 0.014 |
+| tuned (skew 0, perp 0.85, guide 0.15) | 0.7688 | 0.7975 | 0.5752 | worse by 0.017 |
+
+Both configs came out worse than the pre-fine-tune baseline (bare 0.7584, tuned 0.752),
+by more than the 0.005 noise floor. The matching loss plateaued well above zero and the
+detector kept its edge. This is one of the two pre-defined failure signatures: the model
+cannot be pushed onto the human feature distribution without the anchor loss fighting it.
+
+Reading: the CANDI flow backbone is at or near its ceiling for this metric. Short-unroll
+gradient matching does not move it. This is evidence, not proof (one short run at one lr),
+so a fresh session may confirm with one or two more configs (higher mmd weight, weaker
+anchor, longer unroll) before committing. But the weight of evidence points to a new
+architecture rather than more tuning of this one.
+
+### WS7 feasibility: raw event streams exist and the representation is near-lossless
+
+The pool files pool_flat_i16.npy and pool_t_rel_f32.npy turn out to hold the raw
+pre-resample event data: integer pixel positions with millisecond timestamps. Only 30%
+of inter-event gaps sit on the 8ms clock, the rest spread from 1 to 150ms. This was the
+single biggest risk for the event-stream model and it is retired. The model can train on
+real event streams directly, no deconvolution needed.
+
+Event statistics from a 20k-trajectory sample: median 43 events per trajectory (p99 389),
+displacement vocabulary of +/-63 covers 99.1% of x steps and 99.7% of y steps, 14.8% of
+events are pure time ticks with no movement, 6.3% of steps carry duplicate or out-of-order
+timestamps.
+
+Upper-bound test (experiments/event_replay.py): real event streams pushed through the
+exact (dt, dx, dy) encode-decode the model would use, evaluated at n=2000.
+
+| Variant | RF OOB | GBM CV | Raw-NN |
+|---------|--------|--------|--------|
+| pure replay (pipeline check) | 0.4960 | 0.4871 | 0.4868 |
+| merge duplicate timestamps only | 0.5069 | 0.5071 | 0.4863 |
+| merge + clip jumps to +/-63 | 0.5247 | 0.5498 | 0.4878 |
+| merge + split jumps (no clipping), 3 seeds | 0.5018 / 0.5199 / 0.5186 | 0.49 to 0.51 | 0.49 to 0.51 |
+
+Clipping oversized jumps is detectable, but splitting them into collinear sub-events
+reconstructs the same path and costs nothing. Verdict: the representation ceiling is
+about 0.51, a quarter-point below the current best generative result of 0.752. All
+three feasibility gates pass. Building the model is justified.
+
+### WS7 result: trained event-stream model does NOT beat CANDI (0.945 vs 0.752)
+
+Model: 5.9M-param non-autoregressive Transformer, categorical dx/dy heads (128 classes
+with PAD) trained by absorbing-state masking, flow matching on z-scored log(dt). Trained
+22 epochs on a 1M subsample (val flow 0.2175, val ce 0.9908, monotone). Checkpoints and
+code in models/event_stream.py, training/train_events.py, experiments/event_stream.py.
+
+Sampler note: the first confidence-reveal sampler used argmax at every position, which
+collapses each token to its per-position mode and telescopes net displacement to ~7% of
+requested. Replaced with a MaskGIT-style sampler: reveal count follows the training mask
+schedule sqrt_ab[t], tokens are sampled (not argmaxed) from the softmax, order by
+sampled-token confidence. After the fix an all-MASK probe shows E[sum dx,dy] tracks the
+conditioning within ~15%, angle error 2.4 deg, event count median 45 vs human 43.
+
+| Config (n=2000) | RF OOB | RF CV | GBM CV | Raw-NN |
+|-----------------|--------|-------|--------|--------|
+| epoch 22, temp 1.0 | 0.9451 | 0.9463 | 0.9515 | 0.6293 |
+| epoch 22, temp 0.7 | 0.9641 | 0.9647 | 0.9671 | 0.6619 |
+| epoch 22, temp 0.5 | 0.9695 | 0.9702 | 0.9712 | 0.6350 |
+
+Failure is entirely in path SHAPE, not signal texture. The worst per-feature Wasserstein
+gaps are angular_velocity_mean (0.72), path_efficiency (0.57), num_direction_changes
+(0.57) - the generated paths zigzag far more than human arcs. Every velocity/acceleration/
+jerk feature matches to within 0.06, and the raw-NN detector on the low-level signal only
+reaches 0.63. So the per-event texture we built this approach to capture is essentially
+right; the model fails to produce directionally coherent (smooth) paths.
+
+Lower temperature makes it WORSE (0.945 -> 0.964 -> 0.970 as temp 1.0 -> 0.7 -> 0.5),
+which rules out sampling variance as the cause. The zigzag is structural: dx and dy are
+predicted by independent heads and revealed largely independently per position, so nothing
+enforces the strong direction autocorrelation of a human arc. Real events replayed through
+the same representation score 0.51 (above), so the representation is not the problem - the
+model is. Fixing this needs an architecture/training change (joint dx,dy or velocity-with-
+smooth-prior; couple adjacent steps), not a decode knob. Go/no-go: this model as built is
+a NO. CANDI at 0.752 remains the best result.
+
+### WS7b gate: polar representation passes only with integer-pixel decode
+
+The WS7b speed+heading representation was gated before training by replaying real
+event streams through it (experiments/event_replay_polar.py, n=2000 each). The
+lossless float round-trip matches the WS7 split-replay floor, as it must. The
+surprise is what quantization costs and where it comes from:
+
+| Variant | RF OOB | GBM CV | Raw-NN |
+|---------|--------|--------|--------|
+| exact float round-trip (sanity) | 0.5084 | 0.5033 | 0.4861 |
+| dtheta 256 bins | 0.5383 | 0.5666 | 0.4853 |
+| dtheta 512 bins | 0.5473 | 0.5701 | 0.4849 |
+| dtheta 1024 bins | 0.5677 | 0.5818 | 0.4868 |
+| dtheta 256 + speed 128 log bins | 0.5640 | 0.5803 | 0.4868 |
+| dtheta 1024 + speed 512 log bins | 0.5662 | 0.5848 | 0.4871 |
+| dtheta 256 + speed 128, positions ROUNDED to integer px | 0.5073 | 0.5141 | 0.4859 |
+| dtheta 256 only, positions ROUNDED | 0.5121 | 0.5200 | 0.4858 |
+
+Two findings. First, the penalty does not shrink with finer bins (256 to 1024 bins
+all land around 0.54 to 0.57), so it is not quantization drift. Second, rounding
+decoded positions back to integer pixels removes the penalty entirely at any bin
+resolution tested. The feature detectors are keying on off-grid positions, not on
+angular resolution: any decode that leaves positions off the integer lattice costs
+about 0.05 AUC on otherwise-real data, invisible to the raw-NN (0.486 throughout)
+but visible to RF and GBM. This confirms the pixel grid is a load-bearing part of
+the signal (the original WS7 thesis) and fixes the WS7b decode contract: integrate
+speed and heading continuously, then round positions to integer pixels inside the
+decode. With that contract the full planned model quantization (256 dtheta bins,
+128 log-speed bins) sits at the representation floor: 0.5073, within noise of pure
+replay.
+
+Human dtheta statistics that shaped the head design (500-trajectory sample): 32%
+of heading increments are exactly 0, 46% sit on the 45-degree lattice of 1px
+moves, median |dtheta| is 5.5 degrees but p90 is 45 degrees. Large turns happen
+almost only at low speed, so the dtheta head is categorical (256 bins, spikes get
+exact bins) and conditioned on the speed class at the same position:
+p(s, th | ctx) = p(s | ctx) p(th | s, ctx). Ticks (10% of events after merge)
+carry no heading; heading persists through them. PAD lives on the speed head only,
+so decode truncation has a single owner. The first motion event's dtheta is
+relative to the conditioning angle, so the decoder needs no side information.
+
+### WS7b result: sampler reveal order was hiding 0.12 of AUC, model lands at 0.806
+
+The 22-epoch overnight run (1M subsample, models/event_stream_polar.py) finished
+cleanly on July 3 with all three losses still slowly improving (val flow 0.224,
+speed CE 1.301, dtheta CE 1.886). Out of the box at n=2000 it scored RF OOB 0.929,
+barely better than WS7's 0.945, and the failure looked inverted: paths were far too
+straight (path_efficiency median 0.994 vs human 0.949, max_deviation 5.9px vs
+16.6px, curvature_std 15x too small).
+
+The cause was the sampler, not the model. MaskGIT confidence-order reveal always
+unmasks the most confident positions first, and the most confident dtheta is
+always "no turn", so straightness gets locked in early and every later token
+conditions on a straight context. Pure random reveal order overshoots the other
+way (max_deviation 55px, wandering paths). The standard MaskGIT fix, Gumbel noise
+on the confidence with a linearly annealed choice temperature, interpolates:
+
+| Sampler config (ep22 checkpoint) | RF OOB | GBM CV | Raw-NN |
+|----------------------------------|--------|--------|--------|
+| confidence order (as built)      | 0.9289 | 0.9310 | 0.6396 |
+| gumbel choice_temp 3             | 0.8390 | 0.8494 | 0.6100 |
+| gumbel choice_temp 4             | 0.8060 | 0.8223 | 0.6086 |
+| ct 4 + tick merge + 200 steps    | 0.8080 | 0.8315 | 0.6036 |
+
+One knob, 0.12 of AUC. Event-level statistics under ct=4 match humans closely:
+dtheta sign persistence 0.358 vs 0.342, |dtheta| by speed band within a few
+degrees at every band, dt-by-speed medians identical (8ms motion cadence, 1-2ms
+ticks), speed lag-1 autocorrelation 0.66 vs 0.59, and both starts and endings
+ramp like human trajectories. PAD placement is perfectly contiguous.
+
+Two artifacts survive the sampler fix. First, the model emits ticks at 2.3x the
+human rate (22% vs 9.4% of events) and scatters them mid-flight where humans
+almost never put them (worst paths alternate tick/motion at 1ms/7ms, which is
+what blows up the angular-velocity features). Merging ticks into the following
+event at decode improves the Wasserstein gaps but not the AUC. Second, turning
+per unit time stays about 1.8x human even with ticks merged, and the detector's
+remaining edge sits in correlation structure (mean_acceleration vs everything,
+gaps above 1.0) plus angular_velocity_mean (0.41) and path_efficiency (0.36).
+
+Go/no-go: WS7b as trained does not beat CANDI polar flow (0.806 vs 0.752). The
+remaining gaps are exactly the quantities a distribution-matching fine-tune
+trains on directly, the event backbone is not at a representation ceiling
+(replay floor 0.507), and WS3 already proved the MMD machinery runs. Next step
+is the planned stage 2: MMD fine-tune of the s/dtheta heads on the event
+backbone, dt head frozen, partial no-grad MaskGIT reveal matching the eval
+sampler followed by a straight-through Gumbel pass for gradients.
+
+### Stage 2, first pass: distribution matching moves the score for the first time
+
+Built training/train_events_polar_dm.py, the WS3 idea rebuilt for the event
+backbone. Per step: keep a real batch's dt and length (timing stays untouched,
+dt head frozen), partially sample s/dtheta with the exact eval sampler (MaskGIT,
+Gumbel choice order) to a random reveal fraction, complete the rest in one
+straight-through Gumbel-softmax pass, and match statistics of the completed
+streams against an independent real batch. The pretraining losses stay on as an
+anchor.
+
+What the first three versions taught:
+
+- v1 matched 15 event-level features with RBF MMD. The MMD fell 0.22 to 0.17,
+  but the real-vs-real MMD floor at that batch size turned out to be 0.15: the
+  pretrained model was ALREADY matched on event-level statistics, so there was
+  nothing to learn. AUC went 0.806 -> 0.834. Lesson: measure the estimator
+  floor before reading a plateau as convergence.
+- The detector's edge lives after the 125Hz resample, so v2 rebuilt the feature
+  layer as a differentiable copy of features.py: linear-interpolation resample
+  of integer-rounded (straight-through) positions, then all 18 detector
+  features, plus per-feature quantile matching (the eval's Wasserstein table)
+  and covariance matching (the eval's correlation table). v2 diverged: both
+  match and anchor rose monotonically from step 1 (0.891 at eval). Cause:
+  atan2 gradients scale as one over segment length squared and curvature
+  divides by speed cubed, so sub-pixel resample frames flooded every update
+  with noise.
+- v3 stabilized it (curvature speed clamp raised to 30 px/s, angle gradients
+  detached at slow frames, match weight cut to 1, lr 1e-5). Match losses fell
+  toward their floors with the anchor flat, and the eval improved: RF OOB
+  0.7907, GBM 0.8060, raw-NN 0.6125. First AUC gain from distribution matching
+  in this project (WS3 on CANDI only ever made things worse).
+
+0.791 is still short of CANDI's 0.752, but the mechanism finally works and has
+obvious headroom: the v3 slow-frame gradient detach cut gradient flow exactly
+where the top remaining gap (angular_velocity_mean, W 0.50) lives. v4 replaces
+the detach with a scale-invariant atan2 on clamped-length-normalized segments
+(identical values, bounded gradients) and a bigger matching batch.
+
+### Lattice snap: the angular-velocity gap was manufactured by the decode
+
+The stubborn angular_velocity_mean gap (W 0.4 to 0.5 across every config) turned
+out not to be in the model at all. Frame-level profiling localized the entire
+excess to slow frames (0.5 to 3.2 px per frame): 3x the human turning rate
+there, all other speed bands matching. Decoding the same token streams without
+integer rounding erased it completely (slow-band median |omega| 24.6 -> 0.0),
+which pins the mechanism: the model emits smooth off-lattice headings, and
+error-carrying rounding of a slow off-lattice path alternates lattice
+directions nearly every step. Real slow movement does not do this: a person
+moving 1px at a time emits repeated identical integer steps with occasional
+direction changes, because the recording lattice IS their output space.
+
+Fix (decode contract, same category as the mandatory integer rounding): emit
+slow steps (s < 2.5 px) as whole lattice steps, rounding the step vector at
+the continuous heading to the nearest realizable integer displacement. The
+integrated heading stays continuous, so no drift accumulates in direction.
+EVENT_SNAP=2.5 in experiments/event_stream_polar.py. Frame-level profile
+after: slow-band median 5.5 vs human 7.8, overall mean |omega| 19.4 vs 21.2.
+
+Result at n=2000 on the DM v3 checkpoint (gumbel ct=4, snap 2.5):
+
+| Config | RF OOB | GBM CV | Raw-NN |
+|--------|--------|--------|--------|
+| dm_v3 + snap 2.5 | 0.7550 | 0.7822 | 0.6078 |
+
+Statistically tied with the CANDI polar flow best (0.752 +/- 0.005), reached
+in pure T3 with no post-processing, and the day's chain was 0.929 -> 0.806
+(sampler) -> 0.791 (distribution matching) -> 0.755 (decode contract).
+angular_velocity_mean and _std left the top-gap table entirely. What remains
+is the heavy tail of messy human paths: 10% of human trajectories have
+path_efficiency below 0.48 (overshoot loops, hesitation squiggles) and the
+model generates almost none; human curvature_std p90 is 30x synth. Next:
+retrain the DM stage with the snap inside the differentiable decode
+(train/decode consistency) and check whether the quantile term can pull the
+messy tail in; sweep choice_temp under the new decode.
+
+### New project best: 0.702 +/- 0.007, event model, pure T3
+
+Three more findings stacked on the lattice snap during the same day:
+
+1. The choice-temperature optimum moved once the snap removed the slow-frame
+   jitter: extra reveal randomness now converts into macro shape variety
+   (which the detector rewards) instead of wiggle (which it punishes).
+   Sweep at n=2000, dm_v3 + snap 2.5: ct4 0.7550, ct5 0.7380, ct6 0.7211,
+   ct8 0.7191, ct10 0.7339. Flat bottom at 6-8.
+2. Retraining the DM stage with the snap inside the differentiable decode
+   (v5, from base, ct7 reveal) did NOT beat the v3 checkpoint: 0.726-0.730.
+   The DM axis is saturated around 0.72 under this harness.
+3. The duration sampler had been running at 0.7x human variance the whole
+   time (DurationModel std_mult default, inherited from the CANDI eval
+   configs). At EVENT_DUR_STD=1.0 the model is finally asked for slow,
+   hesitant movements, which is where the messy-path tail lives:
+   path_efficiency gap fell from 0.21 to 0.13 and the score dropped 0.023.
+   ct7 and snap 3.5 rechecks under the new conditioning both lost, so the
+   optimum stands.
+
+Best config, 3-seed confirmed at n=2000 (seeds 42/43/44):
+
+    EVENT_CKPT=event_polar_dm_v3.pt EVENT_ORDER=gumbel EVENT_CHOICE_TEMP=8
+    EVENT_SNAP=2.5 EVENT_DUR_STD=1.0
+    python evaluate.py --experiment experiments.event_stream_polar --n-synthetic 2000
+
+| Seed | RF OOB | GBM CV | Raw-NN |
+|------|--------|--------|--------|
+| 42   | 0.6960 | 0.7167 | 0.5582 |
+| 43   | 0.7114 | 0.7288 | 0.5565 |
+| 44   | 0.6976 | 0.7231 | 0.5728 |
+
+RF OOB 0.702 +/- 0.007, the first result below 0.75 and the largest one-day
+move in the project (0.929 to 0.696 on seed 42). All of it is the same 6M
+parameter model trained overnight; the gains came from the sampler reveal
+order, distribution-matching fine-tune, two decode-contract fixes, and
+restoring full duration variance in the conditioning.
+
+Remaining top gaps at the best config: angular_velocity_mean 0.34 (the
+ct=8 randomness re-inflates some wiggle; tension with shape variety),
+curvature_std 0.23, curvature_mean 0.18. Candidate next levers, in rough
+order of expected value: longer pretraining (22 epochs on 1M was still
+improving; 4M is available), an adversarial feature-space critic to replace
+the saturated fixed-statistic matching, and a curvature-aware term in the
+DM feature set.
+
+### 4M pretrain and the ~0.70 ceiling (July 4-5)
+
+Full-data pretrain: 12 epochs scheduled over all 4,028,855 trajectories,
+stopped after epoch 11 (the final epoch's learning rate was near zero and
+the machine had bluescreened three times during the run; hardware, not
+code). Checkpoint event_polar_4m.pt. Result at n=2000, ct6 snap 2.5
+dur 1.0, seeds 42/43/44: 0.6901 / 0.7030 / 0.7062, mean 0.700 +/- 0.007.
+A statistical tie with the fine-tuned 1M best, reached with no fine-tune
+at all: four times the data absorbed everything the DM stage used to add.
+
+Both fine-tuning axes then FAILED on the 4M base, in the same way:
+
+| Fine-tune | RF OOB (seed 42) | vs base 0.6951 |
+|-----------|------------------|----------------|
+| Fixed-statistic DM (quant+cov+MMD) | 0.7102 | worse |
+| Adversarial critic (hinge GAN, 18 detector features, 800 steps) | 0.7112 | worse |
+
+The critic run is the informative one: the discriminator's real-vs-fake
+margin grew monotonically from 0.03 to 1.80 over all 800 steps and the
+generator never closed any of it, while the pretraining anchor loss stayed
+flat. The critic finds real, learnable differences; pushing the generator
+against them only degrades it. Combined with the correlation diagnosis
+(human per-trajectory features co-vary, mean_acc vs std_acc r = +1.0;
+synth r = -0.5), the conclusion is that the remaining ~0.20 of AUC lives
+in global per-trajectory coherence that a masked token model with
+per-position heads cannot represent, no matter the training signal.
+The pure-generation (level 3) line therefore stands at 0.70 +/- 0.01.
+
+### Masked-infill frontier (level 2): purity vs detectability
+
+experiments/event_infill_polar.py: borrow a real trajectory of matching
+distance (same selection as the replay gate), keep its timing, mask a
+fraction of the speed/heading tokens, let the MaskGIT sampler regenerate
+them, decode under the full contract, rotate to the requested direction.
+INFILL_FRAC=0 is the replay floor (0.507); FRAC=1 with real timing lands
+at pure generation (0.695). Seed 42, n=2000, 4M base, ct6 snap 2.5:
+
+| Fraction regenerated | random positions | contiguous span |
+|----------------------|------------------|-----------------|
+| 10% | 0.5731 | |
+| 15% | 0.5812 | |
+| 25% | 0.5819 | 0.6102 |
+| 50% | 0.6159 | 0.6681 |
+| 75% | 0.6950 | 0.7683 |
+
+Two lessons. First, the very first synthetic tokens are the expensive
+ones: 10% regeneration already costs 0.066 of the 0.188 total, then the
+curve is flat to 25% before climbing again. There is no infill fraction
+that stays near the replay floor. Second, span masking loses to scattered
+masking everywhere, and at 75% is WORSE than pure generation: a long
+contiguous synthetic stretch is a small synthetic trajectory with the full
+coherence gap plus two seams, while scattered tokens each sit inside real
+local context that carries them. The frontier's usable summary: 90% real
+buys 0.573, 75% real buys 0.582, half real buys 0.616.
+
+### Movement-character conditioning (feature-conditioned fine-tune)
+
+The first lever aimed at the diagnosed coherence gap itself. The model gets
+a new conditioning input: the trajectory's own 18 detector features
+(z-scored), projected through a zero-initialized pathway so training starts
+exactly at the pretrained model. Teacher-forced on real data (each
+trajectory conditioned on its own statistics), dt head frozen, 4,000 steps.
+At sampling time the character vector is drawn from a KDE over a bank of
+real feature vectors stored in the checkpoint, matched to the requested
+distance (models/event_stream_polar.py feat_dim,
+training/train_events_polar_featcond.py, EVENT_FEAT* knobs in the
+experiment). Seed 42, n=2000, ct6 snap 2.5 dur 1.0:
+
+| Config | RF OOB |
+|--------|--------|
+| 4M base | 0.6951 |
+| fc_v1, conditioning ON | 0.6929 |
+| fc_v1, conditioning OFF (zero vector) | 0.7247 |
+
+The ON/OFF split shows the pathway is real: the model learned to lean on
+the character vector (its unconditional mode degraded 0.03), and unlike
+both fine-tunes before it, conditioning did not regress the score. The
+cross-feature correlation check (400 trajectories) shows partial repair:
+the jerk pairings moved from negative to positive (max_acc x mean_jerk
++0.12 -> +0.52, mean_jerk x std_jerk -0.21 -> +0.48), but
+mean_acceleration's pairings got worse. Human derivative features
+correlate at r = +1.000 for EVERY pair, i.e. one latent scale variable;
+synthetic correlations remain a patchwork. Event-level endings are NOT the
+cause (last-motion speed p50 is 1 px for both, no tick tails): the human
+lockstep lives in the resampled-space heavy tail. v2 with 12,000 steps is
+the scale-up test.
+
+### New project best: 0.675 +/- 0.002, movement-character conditioning
+
+Scaling the feature-conditioned fine-tune from 4,000 to 12,000 steps
+(fc_v2) turned the tie into the project's first fine-tune GAIN, and the
+first movement of the ~0.70 wall:
+
+| Seed | RF OOB | GBM CV | Raw-NN |
+|------|--------|--------|--------|
+| 42   | 0.6750 | 0.6936 | 0.5526 |
+| 43   | 0.6773 | 0.6943 | 0.5542 |
+| 44   | 0.6725 | 0.6860 | 0.5398 |
+
+RF OOB 0.675 +/- 0.002 (previous best 0.702 +/- 0.007; every secondary
+detector also improved). Config: EVENT_CKPT=event_polar_4m_fc_v2.pt
+EVENT_ORDER=gumbel EVENT_CHOICE_TEMP=6 EVENT_SNAP=2.5 EVENT_DUR_STD=1.0,
+experiments.event_stream_polar. Insensitive to KDE bandwidth (0.1 vs 0.25:
+0.6762 vs 0.6750 at seed 42). Pure level 3: the character vector is drawn
+from a kernel density over real feature vectors, matched to the requested
+distance, not copied from any trajectory.
+
+Why it matters beyond the number: two fine-tunes that PUSHED the model
+toward feature statistics (fixed matching, adversarial) both regressed,
+while giving the model a global variable and teacher-forcing it on real
+data gained 0.025. That is direct evidence the wall was the missing
+per-trajectory coherence variable, and that it is trainable. The 4k-step
+version had already repaired part of the correlation structure; 12k
+strengthened adherence. Open levers, in order: even longer conditioning
+training (loss was still noisy-flat, adherence may still be growing),
+choice-temp sweep under conditioning (the ct=6 optimum was tuned for the
+unconditional model), bandwidth/window shaping of the character draw, and
+a conditioning-aware DM/critic pass now that the model has the variable
+those signals needed.
+
+Post-confirmation choice-temp sweep on fc_v2 (seed 42 only): ct4 0.7072,
+ct6 0.6750, ct8 0.6505. The optimum moved UP under conditioning.
+
+## Choice-temp 8 confirmed: new best 0.658 +/- 0.007 (July 5)
+
+Three-seed confirmation of ct=8 on fc_v2 (EVENT_ORDER=gumbel, SNAP=2.5,
+DUR_STD=1.0):
+
+| seed | RF OOB | GBM 5-fold | Raw-NN |
+|------|--------|------------|--------|
+| 42   | 0.6505 | -          | -      |
+| 43   | 0.6678 | 0.6765     | 0.5527 |
+| 44   | 0.6569 | 0.6703     | 0.5477 |
+
+Mean 0.658 +/- 0.007. Beats the ct=6 best (0.675 +/- 0.002) by 0.017,
+outside combined noise. Higher seed variance than ct=6 (0.007 vs 0.002)
+but the worst ct=8 seed (0.6678) still beats the best ct=6 seed.
+
+ct=10 at seed 42 gave 0.6564 (GBM 0.6588, raw-NN 0.5366): a plateau, not
+a further gain. The choice-temp axis is exhausted at ct=8; the remaining
+levers are training-side (longer conditioning training, conditioning-aware
+critic), not sampler-side.
+
+## fc_v3 (24k total steps): tie, step axis saturated (July 5)
+
+Continued fc_v2 for 12k more steps (constant lr 2e-5, so equivalent to a
+fresh 24k run). Loss flat (3.39 to 3.36). Three seeds at ct=8:
+0.6618 / 0.6650 / 0.6534, mean 0.660 +/- 0.005. Statistical tie with
+fc_v2 at 0.658 +/- 0.007. The v1-to-v2 gain came from 4k-to-12k steps;
+12k-to-24k buys nothing. Conditioning adherence from plain teacher-forced
+training is saturated. fc_v2 stays the best checkpoint. Next lever:
+conditioning-aware critic (adversarial pass with the character vector
+active, so the generator can act on the criticism).
+
+## Conditioning-aware critic: third adversarial strike (July 5)
+
+training/train_events_polar_advfc.py reruns the hinge-GAN critic on fc_v2
+with the movement-character vector active on the generation pass, the
+anchor pass, and (implicitly) the saved eval bank. Hypothesis was that the
+plain critic failed because the generator lacked the global pathway the
+criticism referred to. Result: D gap grew 0.02 to 2.20 by step 400 and
+plateaued there; the generator never closed any of it. Eval at seed 42:
+0.6788 vs fc_v2's 0.6505, a regression consistent with the gap signal.
+
+Verdict: the adversarial/distribution-matching axis is dead on this
+architecture, three independent ways (fixed-stat DM, plain critic,
+conditioned critic). The failure is not missing representation, it is the
+gradient path: per-position token heads cannot coordinate global outcomes
+through the ST-Gumbel chain regardless of what the model is told. The
+detector's top features have also shifted: with derivative coherence
+repaired, the RF now leans on path shape (curvature_std, path_efficiency,
+curvature_mean, movement_duration). Remaining gap = the messy-path tail.
+Next levers are selection-side, not gradient-side: best-of-N candidate
+selection toward the commanded character at sampling time.
+
+## Selection-side levers: best-of-N fails, SIR is the breakthrough (July 5)
+
+Both use the same machinery (EVENT_BESTOF / EVENT_SIR in
+experiments/event_stream_polar.py): sample K candidates per spec, keep one.
+The difference is the keep rule, and it decided everything.
+
+Best-of-N (K=4, keep the candidate closest to its commanded character):
+0.6975 at seed 42 vs 0.6505 baseline. WORSE. Pulling every sample toward a
+target shrinks the conditional feature variance, and the detector reads
+the shrinkage. Same family of mistake as temperature-lowering in WS7.
+
+SIR, sampling-importance-resampling (K=4, independent character draws,
+keep one per spec by Gumbel draw on discriminator log-odds; discriminator
+is a fresh GBM fitted human-vs-candidates on the 18 eval-pipeline
+features, human refs data/human_eval_features.npy): NEW PROJECT BEST,
+3-seed confirmed:
+
+| seed | RF OOB | GBM 5-fold | Raw-NN |
+|------|--------|------------|--------|
+| 42   | 0.5904 | 0.5931     | 0.5495 |
+| 43   | 0.5843 | 0.5750     | 0.5317 |
+| 44   | 0.6059 | 0.5924     | 0.5355 |
+
+Mean 0.594 +/- 0.009, previous best 0.658 +/- 0.007: a 0.064 jump, the
+largest single gain in the project. All three detector families dropped
+together. The mechanism matters: the weighted lottery shifts the realized
+feature DISTRIBUTION toward the human one without collapsing variety,
+which is exactly what every gradient-side method (DM, critic, conditioned
+critic) and the argmin selector failed to do. Purity note: outputs remain
+100% generated (Level 3); real data enters only as reference statistics
+for the selection weights, the same role it already plays in the KDE
+character bank.
+
+Open knobs: K (4 -> 8), EVENT_SIR_TEMP (weight sharpness), and combining
+SIR with a ct re-sweep (selection may prefer a different diversity level).
+
+## SIR leakage audit and the clean result (July 5 evening)
+
+The first SIR runs fitted the discriminator on data/human_eval_features.npy,
+which turned out to BE the eval's human class (evaluate.py loads the same
+file): the judge was studying the answer key. All SIR numbers above are
+therefore optimistic. Fix: a 4000-trajectory reference drawn from the 4.16M
+pool with the eval's 2000 seed-42 indices excluded
+(data/human_ref_features_sir.npy, EVENT_SIR_REF knob, now the default).
+
+Seed-42 sweep before the fix (leaky, for the record): ct8/K4 0.5904,
+ct8/K8 0.5847, ct10/K8 0.5724, ct12/K8 0.5771; leaky ct10/K8 3-seed
+0.583 +/- 0.008. Diversity helps selection up to ct10, then turns.
+
+Clean confirmed result, ct10/K8 with the disjoint reference:
+
+| seed | RF OOB | GBM 5-fold | Raw-NN |
+|------|--------|------------|--------|
+| 42   | 0.6001 | 0.5788     | 0.5200 |
+| 43   | 0.5890 | 0.5987     | 0.5157 |
+| 44   | 0.6000 | 0.5895     | 0.5062 |
+
+NEW PROJECT BEST (honest): 0.596 +/- 0.005. Leakage accounted for roughly
+0.01-0.03 of the apparent gain; the rest is real distribution matching
+that transfers to unseen humans. Config: EVENT_SIR=8 EVENT_CHOICE_TEMP=10
+EVENT_CKPT=event_polar_4m_fc_v2.pt EVENT_ORDER=gumbel EVENT_SNAP=2.5
+EVENT_DUR_STD=1.0. Remaining knobs: K=16, EVENT_SIR_TEMP, DUR_STD under
+selection, stronger discriminator.
+
+## Boundary-speed hypothesis tested and refuted; K/trees probes (July 5 night)
+
+Two knob probes at seed 42, K=16 ct=10 on the clean disjoint reference:
+plain 0.5892 RF / 0.5871 GBM, judge with 600 trees 0.5881 / 0.5758. K=16
+edges out K=8 (0.6001 s42) and judge strength is not the bottleneck.
+
+First-principles check of the detector's remaining signal. The scary
+correlation table (human mean_acc x everything at +1.000) is an artifact:
+Spearman is -0.16 and Pearson drops to -0.11 once the top 1% of |mean_acc|
+is excluded. A handful of short segments with enormous cut speeds pin
+every Pearson entry to 1.0. Do not chase correlation-gap tables built on
+these features again without rank statistics.
+
+The mid-flight hypothesis behind WS5 is dead for this model family.
+Human pool segments do start mid-flight (median first-step speed 250 px/s
+after the 125Hz resample, 90% above 10 px/s), but the event model, trained
+on those same segments, reproduces this: synthetic median 279 px/s, 89%
+above 10 px/s, last-step 101 vs 83 px/s. mean_acc quantiles line up
+through p95. No boundary conditioning or warm-start needed; measuring
+before building saved a workstream.
+
+One residue found: synthetic mean_acc shows a point mass at exactly zero
+(p75 = -4e-12), which happens when first and last resampled steps are both
+stationary. Humans may or may not share the atom; diag_macc_atom.py
+measures it. If synth-only and sizable, an RF split at |mean_acc| < eps is
+free AUC for the detector; fix would be decode-side tick trimming.
+
+Overnight queue (run_overnight_sir.sh, all seed 42, K=16 ct=10 base):
+SIR_TEMP=0.7, TH_TEMP=1.15 (hotter heading proposal for the curvature
+tail, SIR filters), FEAT_BW=0.5 (wider character proposal), K=32, ct=12,
+DUR_STD=1.25. Also added: [sir] ESS instrumentation per eval (median
+effective sample size of the lottery, prints in every log) and a
+DUR_EMPIRICAL=1 knob on DurationModel that resamples actual per-bin
+log-durations instead of a Gaussian fit (conditional skew kept, same
+existing conditioning prior, T3-legal, probe queued for July 6).
+
+Atom follow-up (diag_macc_atom.py, n=400): humans share the exact-zero
+mean_acc atom (synth 4.5% vs human 2.5%, within sampling noise; mean_jerk
+atoms match too). Not an exploitable detector split. Both boundary leads
+are now closed; the remaining gap is curvature-tail and duration shaped.

@@ -1,0 +1,130 @@
+[
+  {
+    "label": "skew=0.3",
+    "auc": 0.592,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "200",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_SPEED_SKEW": "0.3"
+    },
+    "elapsed": 226.5
+  },
+  {
+    "label": "skew=0.5",
+    "auc": 0.6512,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "200",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_SPEED_SKEW": "0.5"
+    },
+    "elapsed": 197.2
+  },
+  {
+    "label": "rv+perp=0.7",
+    "auc": 0.653,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "200",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_RESIDUAL_VEL": "0.3",
+      "CANDI_RESIDUAL_PROB": "0.05",
+      "CANDI_PERP_SCALE": "0.7"
+    },
+    "elapsed": 201.3
+  },
+  {
+    "label": "rv+skew=0.3+perp=0.7",
+    "auc": 0.5732,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "200",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_RESIDUAL_VEL": "0.3",
+      "CANDI_RESIDUAL_PROB": "0.05",
+      "CANDI_SPEED_SKEW": "0.3",
+      "CANDI_PERP_SCALE": "0.7"
+    },
+    "elapsed": 221.3
+  },
+  {
+    "label": "skew=0.3+perp=0.7",
+    "auc": 0.5333,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "200",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_SPEED_SKEW": "0.3",
+      "CANDI_PERP_SCALE": "0.7"
+    },
+    "elapsed": 212.4
+  },
+  {
+    "label": "rv+skew=0.3",
+    "auc": 0.5928,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "200",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_RESIDUAL_VEL": "0.3",
+      "CANDI_RESIDUAL_PROB": "0.05",
+      "CANDI_SPEED_SKEW": "0.3"
+    },
+    "elapsed": 214.2
+  },
+  {
+    "label": "baseline s=200",
+    "auc": 0.6139,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "200",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate"
+    },
+    "elapsed": 213.6
+  },
+  {
+    "label": "rv baseline",
+    "auc": 0.6433,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "200",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_RESIDUAL_VEL": "0.3",
+      "CANDI_RESIDUAL_PROB": "0.05"
+    },
+    "elapsed": 199.8
+  }
+]

@@ -1,0 +1,157 @@
+[
+  {
+    "label": "flow rv=0.3 rp=0.05",
+    "auc": 0.7072,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "50",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.0",
+      "CANDI_RESIDUAL_VEL": "0.3",
+      "CANDI_RESIDUAL_PROB": "0.05"
+    },
+    "elapsed": 111.3
+  },
+  {
+    "label": "flow rv=0.5 rp=0.05",
+    "auc": 0.6416,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "50",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.0",
+      "CANDI_RESIDUAL_VEL": "0.5",
+      "CANDI_RESIDUAL_PROB": "0.05"
+    },
+    "elapsed": 112.8
+  },
+  {
+    "label": "flow rv=0.3 rp=0.10",
+    "auc": 0.6794,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "50",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.0",
+      "CANDI_RESIDUAL_VEL": "0.3",
+      "CANDI_RESIDUAL_PROB": "0.10"
+    },
+    "elapsed": 113.5
+  },
+  {
+    "label": "ddpm rv=0.3 rp=0.05",
+    "auc": 0.6316,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "50",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_JITTER": "0.005",
+      "CANDI_RESIDUAL_VEL": "0.3",
+      "CANDI_RESIDUAL_PROB": "0.05"
+    },
+    "elapsed": 121.1
+  },
+  {
+    "label": "ddpm rv=0.5 rp=0.05",
+    "auc": 0.6896,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "50",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_JITTER": "0.005",
+      "CANDI_RESIDUAL_VEL": "0.5",
+      "CANDI_RESIDUAL_PROB": "0.05"
+    },
+    "elapsed": 120.3
+  },
+  {
+    "label": "flow g=0.3 rv=0.3 rp=0.05",
+    "auc": 0.7331,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "50",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_RESIDUAL_VEL": "0.3",
+      "CANDI_RESIDUAL_PROB": "0.05"
+    },
+    "elapsed": 114.1
+  },
+  {
+    "label": "flow g=0.3 steps=100",
+    "auc": 0.6695,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "100",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate"
+    },
+    "elapsed": 216.9
+  },
+  {
+    "label": "flow g=0.3 steps=200",
+    "auc": 0.6341,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "200",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate"
+    },
+    "elapsed": 422.7
+  },
+  {
+    "label": "flow g=0.3 s=200 rv=0.3 rp=0.05",
+    "auc": 0.602,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "200",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_RESIDUAL_VEL": "0.3",
+      "CANDI_RESIDUAL_PROB": "0.05"
+    },
+    "elapsed": 434.4
+  },
+  {
+    "label": "flow g=0.3 s=200 rv=0.5 rp=0.05",
+    "auc": 0.6527,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "200",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_RESIDUAL_VEL": "0.5",
+      "CANDI_RESIDUAL_PROB": "0.05"
+    },
+    "elapsed": 463.6
+  }
+]

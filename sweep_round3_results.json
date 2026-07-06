@@ -1,0 +1,19 @@
+[
+  {
+    "label": "ramp=0.02",
+    "auc": 0.7289,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "200",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_SPEED_SKEW": "0.3",
+      "CANDI_PERP_SCALE": "0.7",
+      "CANDI_SPEED_RAMP": "0.02"
+    },
+    "elapsed": 244.3
+  }
+]

@@ -1,0 +1,209 @@
+[
+  {
+    "label": "perp_hp=1.0",
+    "auc": 0.6392,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "200",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_SPEED_SKEW": "0.3",
+      "CANDI_PERP_SCALE": "0.7",
+      "CANDI_PERP_HP": "1.0"
+    },
+    "elapsed": 305.5
+  },
+  {
+    "label": "perp_hp=1.3",
+    "auc": 0.7268,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "200",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_SPEED_SKEW": "0.3",
+      "CANDI_PERP_SCALE": "0.7",
+      "CANDI_PERP_HP": "1.3"
+    },
+    "elapsed": 368.7
+  },
+  {
+    "label": "perp_hp=1.5",
+    "auc": 0.7838,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "200",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_SPEED_SKEW": "0.3",
+      "CANDI_PERP_SCALE": "0.7",
+      "CANDI_PERP_HP": "1.5"
+    },
+    "elapsed": 333.2
+  },
+  {
+    "label": "perp_hp=2.0",
+    "auc": 0.8699,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "200",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_SPEED_SKEW": "0.3",
+      "CANDI_PERP_SCALE": "0.7",
+      "CANDI_PERP_HP": "2.0"
+    },
+    "elapsed": 301.5
+  },
+  {
+    "label": "perp_hp=1.3+win=11",
+    "auc": 0.7926,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "200",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_SPEED_SKEW": "0.3",
+      "CANDI_PERP_SCALE": "0.7",
+      "CANDI_PERP_HP": "1.3",
+      "CANDI_PERP_HP_WIN": "11"
+    },
+    "elapsed": 310.3
+  },
+  {
+    "label": "perp_hp=1.3+win=31",
+    "auc": 0.8028,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "200",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_SPEED_SKEW": "0.3",
+      "CANDI_PERP_SCALE": "0.7",
+      "CANDI_PERP_HP": "1.3",
+      "CANDI_PERP_HP_WIN": "31"
+    },
+    "elapsed": 303.1
+  },
+  {
+    "label": "perp=0.8+hp=1.3",
+    "auc": 0.7324,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "200",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_SPEED_SKEW": "0.3",
+      "CANDI_PERP_SCALE": "0.8",
+      "CANDI_PERP_HP": "1.3"
+    },
+    "elapsed": 286.5
+  },
+  {
+    "label": "perp=0.6+hp=1.5",
+    "auc": 0.8095,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "200",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_SPEED_SKEW": "0.3",
+      "CANDI_PERP_SCALE": "0.6",
+      "CANDI_PERP_HP": "1.5"
+    },
+    "elapsed": 273.4
+  },
+  {
+    "label": "flow_noise=0.1",
+    "auc": 0.6231,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "200",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_SPEED_SKEW": "0.3",
+      "CANDI_PERP_SCALE": "0.7",
+      "CANDI_FLOW_NOISE": "0.1"
+    },
+    "elapsed": 293.0
+  },
+  {
+    "label": "flow_noise=0.3",
+    "auc": 0.5705,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "200",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_SPEED_SKEW": "0.3",
+      "CANDI_PERP_SCALE": "0.7",
+      "CANDI_FLOW_NOISE": "0.3"
+    },
+    "elapsed": 250.3
+  },
+  {
+    "label": "flow_noise=0.5",
+    "auc": 0.6554,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "200",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_SPEED_SKEW": "0.3",
+      "CANDI_PERP_SCALE": "0.7",
+      "CANDI_FLOW_NOISE": "0.5"
+    },
+    "elapsed": 291.6
+  },
+  {
+    "label": "flow_noise=0.3+perp_hp=1.3",
+    "auc": 0.7401,
+    "settings": {
+      "CANDI_CKPT": "candi_polar_flow_best.pt",
+      "CANDI_CFG": "0.0",
+      "CANDI_STEPS": "200",
+      "CANDI_ETA": "0.0",
+      "CANDI_CANDIDATES": "1",
+      "CANDI_GUIDE": "0.3",
+      "CANDI_CORRECT": "rotate",
+      "CANDI_SPEED_SKEW": "0.3",
+      "CANDI_PERP_SCALE": "0.7",
+      "CANDI_FLOW_NOISE": "0.3",
+      "CANDI_PERP_HP": "1.3"
+    },
+    "elapsed": 290.9
+  }
+]

@@ -1,0 +1,16 @@
+[
+ {
+  "label": "bare",
+  "rf_oob": 0.7726,
+  "gbm_cv": 0.8042,
+  "raw_nn": 0.5765,
+  "secs": 128
+ },
+ {
+  "label": "tuned",
+  "rf_oob": 0.7731,
+  "gbm_cv": 0.797,
+  "raw_nn": 0.5698,
+  "secs": 213
+ }
+]
