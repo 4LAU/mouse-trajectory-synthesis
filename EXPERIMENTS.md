@@ -2397,3 +2397,28 @@ Two follow-ups queued: seeds 43 and 44 of the pure control, and one
 distillation rerun with --real-frac 0.5 mixing real human batches back
 in as an anchor. If the anchored version still lands above the control,
 CE-based distillation is dead on this architecture, not just drifted.
+
+## Pure model + empirical duration prior: confirmed at 3 seeds (July 6, 13:25)
+
+Seeds 42/43/44 of pure fc_v2 with DUR_EMPIRICAL=1 (no SIR): 0.6470,
+0.6544, 0.6531. New confirmed pure single-net best 0.652 +/- 0.003,
+against 0.675 +/- 0.002 for the same model without the prior fix. The
+whole gain comes from conditioning the model on durations drawn from
+the empirical (distance-binned) human duration distribution instead of
+the fitted lognormal. Costs nothing at serving time and is pure T3.
+
+## Anchored distillation also fails: the axis is closed (July 6, 13:50)
+
+The --real-frac 0.5 rerun mixes a real human batch in for half the
+steps as an anchor against self-training drift. Seed 42, pure model:
+s500 0.6871, s1000 0.6815, s3000 0.6752, all still clearly worse than
+the 0.6470 no-distillation control. The anchor changed the shape of
+the damage (deeper is now mildly better, the opposite of the pure-
+corpus run) but not the sign. Verdict: CE-based distillation of SIR
+selection is dead on this architecture, drifted or anchored. The
+judge's preference lives in joint feature structure of whole decoded
+trajectories, and per-position masked-token training cannot receive
+it. This is the same wall that killed the DM and adversarial
+fine-tunes, seen from a third side. The picker stays an inference-time
+system: "undetectable system" (0.5607 single-seed, 0.596 +/- 0.005
+honest) versus "undetectable model" (0.652 +/- 0.003).
