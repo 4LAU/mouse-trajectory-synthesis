@@ -2123,3 +2123,234 @@ Atom follow-up (diag_macc_atom.py, n=400): humans share the exact-zero
 mean_acc atom (synth 4.5% vs human 2.5%, within sampling noise; mean_jerk
 atoms match too). Not an exploitable detector split. Both boundary leads
 are now closed; the remaining gap is curvature-tail and duration shaped.
+
+## Overnight sweep, first result: sharper SIR weights win (July 5, 22:20)
+
+sir16_stemp07 (EVENT_SIR=16, EVENT_SIR_TEMP=0.7, seed 42): RF OOB 0.5649,
+RF 5-fold 0.5740, GBM 0.5628, Raw-NN 0.5520. Same-seed comparison points:
+sir16 at temp 1.0 was 0.5892, sir8 baseline 0.596. Sharpening the
+selection weights (dividing log-odds by 0.7 before the Gumbel lottery) is
+worth about -0.024 on its own, the largest single-knob gain since SIR
+itself. ESS check says selection is not collapsing: median per-spec ESS
+10.9 of 16 (p10 6.3), so the lottery still spreads mass over most
+candidates. There should be room to push temp lower before variety
+collapses; a stemp=0.5 probe belongs in the July 6 queue.
+
+Wasserstein table after selection: curvature_std and curvature_mean still
+top (0.13-0.15 range), then max_deviation, movement_duration. RF
+importances have flattened further (top importance 0.064, movement_duration).
+The queue died after this probe: the still-running bash re-read the
+script file after it had been edited mid-run and hit a phantom syntax
+error. Relaunched at 22:21; skip-if-log-exists resumed at probe 2.
+Lesson repeated: never edit a shell script while a bash instance is
+executing it; copy-then-edit instead.
+
+## Overnight sweep, probe 2: theta temperature is a dead knob (July 5, 23:05)
+
+sir16_tht115 (EVENT_SIR=16, EVENT_TH_TEMP=1.15, seed 42): RF OOB 0.5887,
+RF 5-fold 0.5928, GBM 0.5844, Raw-NN 0.5550. Statistically identical to
+the same-seed sir16 run at default theta temperature (0.5892), so heating
+the heading distribution buys nothing even with SIR available to filter
+the extra variety. Worse, the curvature Wasserstein gaps widened
+(curvature_std 0.207, curvature_mean 0.167 versus roughly 0.13-0.15
+without the knob): the hotter heading sampling produces wigglier paths
+than humans and SIR cannot fully select its way back. ESS median 12.5 of
+16, higher than the stemp07 run as expected since weights here use
+temp 1.0.
+
+Verdict: leave EVENT_TH_TEMP alone. The win so far is sharper selection
+(stemp 0.7), not hotter proposals. Next probes: bw05 (judge bandwidth),
+sir32, ct12, dur125, duremp.
+
+## Overnight sweep, probe 3: wider judge bandwidth helps a little (July 5, 23:45)
+
+sir16_bw05 (EVENT_SIR=16, EVENT_FEAT_BW=0.5, seed 42): RF OOB 0.5761,
+RF 5-fold 0.5962, GBM 0.5860, Raw-NN 0.5262. About -0.013 versus the
+same-seed temp-1.0 baseline (0.5892) on the headline number, though the
+cross-validated RF and GBM barely moved, so the gain is softer than it
+looks. The Raw-NN drop to 0.526 is the best raw-detector number seen at
+K=16. ESS median 13.2 of 16: widening the judge's KDE bandwidth smooths
+the log-odds, making weights less peaky, which is the same direction as
+raising selection temperature. That makes bw05 partially redundant with
+stemp, not orthogonal.
+
+Standing question for the July 6 combo probe: does bw05 add anything on
+top of stemp07, or are they two handles on the same smoothness dial?
+Given stemp07 alone (0.5649) beats bw05 alone (0.5761), sharpness of
+selection is the stronger lever and the combo test should hold stemp=0.7
+fixed and vary bandwidth around the default.
+
+## Overnight sweep, probe 4: K=32 without sharpening buys nothing (July 6, 01:00)
+
+sir32_ct10 (EVENT_SIR=32, selection temp 1.0, seed 42): RF OOB 0.5962,
+RF 5-fold 0.6040, GBM 0.5948, Raw-NN 0.5304. Slightly worse than sir16 at
+the same temperature (0.5892), within single-seed noise, at double the
+generation cost (77 minutes versus 39). ESS median 25.9 of 32, which is
+81 percent, essentially the same relative spread as K=16 temp 1.0 (78
+percent). That is the tell: at temperature 1.0 the Gumbel lottery keeps
+mass spread across the pool, so doubling the pool mostly adds more
+mediocre candidates to the raffle rather than concentrating on the best
+ones. More candidates only pay off if selection is sharp enough to
+exploit them.
+
+Direct implication for the July 6 queue: the interesting untested cell is
+K=32 with stemp 0.7 or 0.5. If sharp selection plus a bigger pool
+compounds (stemp07 alone is 0.5649), that combination is the natural
+recipe for the distillation corpus, where per-sample cost matters less
+than corpus quality.
+
+## Overnight sweep, probe 5: choice temp 12 is a dead knob (July 6, 01:40)
+
+sir16_ct12 (EVENT_SIR=16, EVENT_CHOICE_TEMP=12, seed 42): RF OOB 0.5948,
+RF 5-fold 0.6017, GBM 0.5905, Raw-NN 0.5416. No improvement over ct=10
+(0.5892 same seed); if anything a hair worse, within noise. Same story as
+th_temp: heating the proposal distribution does not help when the judge
+already has enough variety to choose from at ct=10. EVENT_CHOICE_TEMP
+stays at 10.
+
+Proposal-side knobs are now 0 for 3 tonight (th_temp, K=32-soft, ct=12).
+Selection-side knobs are 2 for 2 (stemp, bandwidth). The sweep is telling
+one consistent story about where the remaining signal lives.
+
+## Overnight sweep, probe 6: extra duration jitter hurts (July 6, 02:15)
+
+sir16_dur125 (EVENT_SIR=16, EVENT_DUR_STD=1.25, seed 42): RF OOB 0.6132,
+clearly worse than the 0.5892 same-seed baseline at DUR_STD=1.0. Widening
+the duration prior pushes movement_duration off the human marginal faster
+than the judge can select it back. Proposal-side knobs are now 0 for 4
+tonight. DUR_STD stays at 1.0.
+
+## Overnight sweep, probe 7 and wrap-up (July 6, 02:55)
+
+sir16_duremp (EVENT_SIR=16, DUR_EMPIRICAL=1, seed 42): RF OOB 0.5813,
+RF 5-fold 0.5923, GBM 0.5739, Raw-NN 0.5312. A small gain over 0.5892,
+and the mechanism is visible: movement_duration Wasserstein fell to
+0.040 from the 0.055 to 0.074 range of every other run tonight. The
+empirical duration prior fixes the duration marginal directly instead of
+asking the judge to fix it by selection. Technically this is the one
+proposal-side change that helped, but it is a prior correction toward the
+human distribution, not added heat, which is exactly why it fits the
+pattern rather than breaking it.
+
+Full sweep, seed 42, baseline sir16 temp 1.0 = 0.5892:
+
+| probe            | knob                    | RF OOB | verdict |
+|------------------|-------------------------|--------|---------|
+| sir16_stemp07    | selection temp 0.7      | 0.5649 | win, big |
+| sir16_bw05       | judge bandwidth 0.5     | 0.5761 | small win |
+| sir16_duremp     | empirical duration prior| 0.5813 | small win |
+| sir16_tht115     | heading temp 1.15       | 0.5887 | dead |
+| sir16_ct12       | choice temp 12          | 0.5948 | dead |
+| sir32_ct10       | K=32, soft weights      | 0.5962 | dead, 2x cost |
+| sir16_dur125     | duration jitter 1.25    | 0.6132 | hurts |
+
+One story: proposal heat fails, selection sharpness and prior fixes win.
+The generator already drafts human-like paths often enough; remaining
+gains come from choosing among drafts more decisively and from aligning
+the conditioning priors with the human marginals.
+
+Combo queue launched at 03:00 (run_combo_sir.sh): stemp05 (sharpness
+curve), stemp07+duremp (stack the winners), sir32+stemp07 (pool size now
+that selection can exploit it), stemp07+iter2 (iterated SIR). Results by
+about 06:30, then the recipe gets locked for the distillation corpus.
+
+## Combo queue, probe 1: sharpness curve bottoms near 0.7 (July 6, 03:40)
+
+sir16_stemp05 (selection temp 0.5, seed 42): RF OOB 0.5704, RF 5-fold
+0.5814, GBM 0.5788, Raw-NN 0.5473. Slightly worse than stemp 0.7
+(0.5649), and ESS confirms why: median per-spec ESS fell to 8.1 of 16
+with p10 at 3.3, meaning for a tenth of the specs the lottery is
+effectively choosing among three candidates. Push sharpness too far and
+selection starts cloning the judge's favorite mode, which the detector
+can price. The sharpness curve is shallow between 0.5 and 0.7 but 0.7 is
+the operating point: nearly all the gain, twice the effective variety.
+
+EVENT_SIR_TEMP locked at 0.7. Remaining combos test what stacks on top.
+
+## Combo queue, probe 2: the winners stack, new single-seed best (July 6, 04:20)
+
+sir16_stemp07_duremp (selection temp 0.7 + empirical duration prior,
+seed 42): RF OOB 0.5607, RF 5-fold 0.5728, GBM 0.5702, Raw-NN 0.5192.
+Best single-seed number of the project so far, edging stemp07 alone
+(0.5649). The gains compose because they act on different parts of the
+pipeline: duremp fixes the duration marginal at the prior
+(movement_duration drops out of the top Wasserstein list entirely), which
+frees the judge's selection budget for shape. Raw-NN at 0.5192 is the
+closest any raw-trajectory detector has come to chance. ESS median 10.8
+of 16, unchanged from stemp07 alone, so no variety cost.
+
+Curvature_std (0.19) and curvature_mean (0.15) remain the last big
+marginal gaps. Two probes left: sir32+stemp07 and iter2.
+
+## Combo queue, probe 3: pool size is saturated at 16 (July 6, 05:35)
+
+sir32_stemp07 (K=32 + selection temp 0.7, seed 42): RF OOB 0.5705,
+RF 5-fold 0.5941, GBM 0.5617, Raw-NN 0.5257. No better than K=16 at the
+same temperature (0.5649), at double the generation cost. The hypothesis
+from the overnight sweep, that a bigger pool would pay once selection was
+sharp enough to exploit it, is refuted: even with sharp weights the extra
+16 candidates add nothing the judge wants. The generator's 16 draws
+already cover the region of feature space the judge can distinguish;
+past that, candidate 17 through 32 are redundant samples from the same
+distribution. K stays at 16, which also keeps the distillation corpus
+cost at half.
+
+## Combo queue wrap-up: recipe locked (July 6, 06:15)
+
+sir16_stemp07_iter2 (two SIR rounds at temp 0.7, seed 42): RF OOB 0.5755,
+worse than one round (0.5649). The log-odds tell the story: round two
+lifted mean candidate log-odds from -2.36 to -1.78, so the survivors do
+score better under the judge, yet the detector AUC got worse. Optimizing
+harder against a fixed judge past one round trades real variety for
+judge-pleasing, and the eval detector (a fresh RF the judge has never
+seen) prices the difference. Same lesson as stemp 0.5 from the other
+side: there is an optimum amount of selection pressure and one tempered
+round at 0.7 is it.
+
+Combo results, seed 42:
+
+| probe                | RF OOB | verdict |
+|----------------------|--------|---------|
+| stemp07 + duremp     | 0.5607 | LOCKED RECIPE |
+| stemp07 (reference)  | 0.5649 | |
+| stemp05              | 0.5704 | too sharp |
+| sir32 + stemp07      | 0.5705 | pool saturated |
+| stemp07 + iter2      | 0.5755 | judge-overfit |
+
+Locked SIR recipe for the distillation corpus: EVENT_SIR=16
+EVENT_SIR_TEMP=0.7 DUR_EMPIRICAL=1 on event_polar_4m_fc_v2.pt with
+EVENT_ORDER=gumbel EVENT_CHOICE_TEMP=10 EVENT_SNAP=2.5 EVENT_DUR_STD=1.0.
+Single-seed 0.5607; multi-seed confirmation deferred to the protected
+final confirmation window so the GPU can start on the distillation
+corpus now.
+
+## Distillation build: corpus generator and trainer (July 6, 06:50)
+
+The locked SIR recipe is an inference-time system: draw 16, let a judge
+pick. Distillation bakes the picking into the weights so a single draft
+lands where the selected draft used to. Two new pieces:
+
+training/make_distill_corpus.py generates the corpus with the locked
+recipe (K=16, selection temp 0.7, empirical duration prior, fc_v2). The
+design decision that matters: the corpus stores the winning candidate's
+TOKENS, not its decoded pixels. The judge scores the fully decoded
+trajectory, snap and round included, because that is what a detector
+sees; but training happens in token space with the exact pretraining
+objective, and snap/round stay serving-time decode steps. Re-encoding
+decoded pixels back to tokens would bake the decode artifacts into the
+data and then apply them again at serving. 20,000 specs in ten
+2000-spec blocks, each block judged by a fresh GBM against the disjoint
+4000-row human reference (never the eval humans), one crash-safe shard
+per block. Smoke test: 64/64 specs selected, ESS median 9.3 of 16,
+1.17 s per spec on the 4070, so the full corpus takes about 6.5 hours.
+Batch 512 was tried and changed nothing; the GPU is saturated at 256.
+
+training/train_events_polar_distill.py fine-tunes fc_v2 on the corpus:
+same losses as pretraining, dt head frozen (timing already matches
+humans), feature vector teacher-forced from each corpus trajectory's own
+tokens through the same differentiable pipeline that built the bank, and
+the checkpoint's real-human feature bank passes through untouched, so
+sampling still draws characters from real data. Low learning rate 1e-5,
+default 3000 steps, snapshots every 500 so the eval can pick the best
+point on the gain-versus-drift curve. A --real-frac flag can mix real
+batches back in as an anchor if pure self-corpus training drifts.
