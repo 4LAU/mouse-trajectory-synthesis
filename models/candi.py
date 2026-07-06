@@ -160,6 +160,60 @@ class CANDIModel(nn.Module):
         x = self.norm(x)
         return self.cont_head(x), self.disc_head(x).squeeze(-1)
 
+    def q_flow(self, x0, t_cont, noise=None):
+        """Flow matching forward process. t_cont: float tensor in [0, 1]."""
+        if noise is None:
+            noise = torch.randn_like(x0)
+        t = t_cont.view(-1, 1, 1)
+        x_t = (1 - t) * x0 + t * noise
+        velocity = noise - x0
+        return x_t, noise, velocity
+
+    @torch.no_grad()
+    def flow_sample(
+        self,
+        cond: torch.Tensor,
+        seq_len: int,
+        n_steps: int = 50,
+        cfg_scale: float = 0.0,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        B = cond.shape[0]
+        dev = cond.device
+
+        xt = torch.randn(B, seq_len, 2, device=dev)
+        stall_s = torch.full((B, seq_len), self.STALL_MASK, device=dev)
+        mflag = torch.ones(B, seq_len, device=dev)
+
+        dt = 1.0 / n_steps
+
+        for i in range(n_steps):
+            t_cont = 1.0 - i * dt
+            t_scaled = torch.full((B,), t_cont * (self.n_steps - 1), device=dev)
+            v_pred, sl = self.forward(xt, stall_s, mflag, t_scaled, cond)
+
+            if cfg_scale > 0:
+                v_u, sl_u = self.forward(
+                    xt, stall_s, mflag, t_scaled, torch.zeros_like(cond),
+                )
+                v_pred = v_u + cfg_scale * (v_pred - v_u)
+                sl = sl_u + cfg_scale * (sl - sl_u)
+
+            xt = xt - dt * v_pred
+
+            frac = 1.0 - t_cont
+            if frac > 0.3:
+                conf = torch.abs(sl)
+                thresh = max(0.5, 3.0 * (1.0 - frac))
+                reveal = (conf > thresh) & (mflag > 0.5)
+                stall_s = torch.where(reveal, (torch.sigmoid(sl) > 0.5).float(), stall_s)
+                mflag = torch.where(reveal, torch.zeros_like(mflag), mflag)
+
+        sp = torch.sigmoid(sl)
+        final_stall = torch.where(mflag > 0.5, (sp > 0.5).float(), stall_s)
+        out = xt.clone()
+        out[final_stall > 0.5] = 0.0
+        return out, final_stall
+
     @torch.no_grad()
     def sample(
         self,
@@ -168,6 +222,7 @@ class CANDIModel(nn.Module):
         n_steps: int = 50,
         eta: float = 0.0,
         cfg_scale: float = 0.0,
+        pred_type: str = "x0",
     ) -> tuple[torch.Tensor, torch.Tensor]:
         B = cond.shape[0]
         dev = cond.device
@@ -183,14 +238,21 @@ class CANDIModel(nn.Module):
 
         for i, tv in enumerate(times):
             t = torch.full((B,), tv, dtype=torch.long, device=dev)
-            dp, sl = self.forward(xt, stall_s, mflag, t, cond)
+            raw, sl = self.forward(xt, stall_s, mflag, t, cond)
 
             if cfg_scale > 0:
-                dp_u, sl_u = self.forward(
+                raw_u, sl_u = self.forward(
                     xt, stall_s, mflag, t, torch.zeros_like(cond),
                 )
-                dp = dp_u + cfg_scale * (dp - dp_u)
+                raw = raw_u + cfg_scale * (raw - raw_u)
                 sl = sl_u + cfg_scale * (sl - sl_u)
+
+            if pred_type == "x0":
+                dp = raw
+            elif pred_type == "eps":
+                dp = (xt - self.sqrt_1mab[tv] * raw) / self.sqrt_ab[tv].clamp(min=1e-8)
+            else:
+                dp = self.sqrt_ab[tv] * xt - self.sqrt_1mab[tv] * raw
 
             frac = 1.0 - tv / self.n_steps
             if frac > 0.3:
