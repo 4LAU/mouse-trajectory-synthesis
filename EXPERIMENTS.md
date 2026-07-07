@@ -3010,3 +3010,34 @@ the primary at 0.4973 on its single available seed; the raw event clock is
 a disclosed out-of-scope channel with a principled reason post-hoc fixes
 cannot exist; and the resampled raw channel survives two much stronger
 adversaries. The 0.504 three-seed headline stands as committed.
+
+## Publication pass: the result is now verifiable by strangers (July 7)
+
+The afternoon went to reproducibility rather than new numbers, and the
+work paid for itself within the hour. Replay mode no longer loads the
+model checkpoint (a cached-pool replay never touches the sampler, so it
+never needed one), which turns "verify the headline" into a two-minute
+CPU job. The three pools, the winning picks, and the checkpoint went up
+as release assets, setup_data.py fetches them, and verify_headline.py
+replays all three seeds and checks each number against the published
+value.
+
+Testing that path from a genuinely fresh clone caught two problems that
+would have greeted the first outside verifier. The release carried a
+May 5 copy of human_eval_features.npy, while every published number uses
+the May 9 regeneration; replaying against the stale file reads 0.5230
+where the journal says 0.5095, which is exactly the discrepancy that
+makes a reader stop trusting the rest. cfm_best.pt and demo_pool.npz had
+drifted the same way. All three are re-uploaded and the fresh-clone
+replay now returns 0.5095 / 0.5030 / 0.4993, matching the confirmed
+run digit for digit.
+
+The same check now runs in CI on every push, on Linux with pinned
+CPU-only dependencies. Seeds 42 and 43 reproduce exactly across the OS
+boundary; seed 44 lands at 0.4989 against the published 0.4993, a
+0.0004 platform difference worth recording because the README promises
+what it can keep: exact on the original platform, within 0.001 anywhere
+else. The repository is public as of today, relicensed Apache-2.0 with
+a citation file, and the five source datasets are credited the way
+their authors ask (two are CC BY 4.0, three publish citation requests
+in place of a license).

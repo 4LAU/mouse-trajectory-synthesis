@@ -88,7 +88,7 @@ python evaluate.py --experiment experiments.zimt_magcorr        # historical bes
 
 To verify the headline 0.504 directly from the downloaded bundle (CPU, about two minutes), see [Reproduce the current results](#reproduce-the-current-results).
 
-Note: `torch>=2.0` installs CPU-only by default from PyPI. For GPU acceleration, install PyTorch with CUDA support first (see [pytorch.org](https://pytorch.org/get-started/locally/)).
+Note: verifying the headline runs on CPU; no GPU or CUDA setup is needed. For GPU-accelerated generation, install PyTorch with CUDA support first (see [pytorch.org](https://pytorch.org/get-started/locally/)).
 
 ### Hardware
 
@@ -96,7 +96,7 @@ Developed on an RTX 4070 (12GB VRAM). A single consumer GPU is sufficient for al
 
 ## Reproduce the current results
 
-**Verify the headline in minutes, no GPU.** `setup_data.py` downloads the cached candidate pools and the winning picks for all three seeds. Replaying them through the evaluator reproduces the confirmed numbers exactly (0.5095 / 0.5030 / 0.4993, mean 0.504) without loading the model:
+**Verify the headline in minutes, no GPU.** `setup_data.py` downloads the cached candidate pools and the winning picks for all three seeds. Replaying them through the evaluator reproduces the confirmed numbers (0.5095 / 0.5030 / 0.4993, mean 0.504; exact on the original platform, within 0.001 across OS and BLAS differences) without loading the model:
 
 ```bash
 EVENT_POOL_LOAD=pool_s42_k16.npz \
@@ -111,7 +111,7 @@ Repeat with `s43`/`--seed 43` and `s44`/`--seed 44` for the other two seeds, or 
 **Pure model, no selection (AUC ~0.652):**
 
 ```bash
-.venv/Scripts/python.exe evaluate.py --experiment experiments.event_stream_polar
+python evaluate.py --experiment experiments.event_stream_polar
 ```
 with environment variables `EVENT_CKPT=event_polar_4m_fc_v2.pt EVENT_ORDER=gumbel EVENT_CHOICE_TEMP=10 EVENT_SNAP=2.5 EVENT_DUR_STD=1.0 DUR_EMPIRICAL=1`.
 
