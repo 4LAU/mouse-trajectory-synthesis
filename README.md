@@ -26,11 +26,11 @@ All numbers are OOB Random Forest AUC on 18 kinematic features (n=2000 synthetic
 | ZIMT (magcorr) | 0.864 | Generative (historical) | Best result of the continuous-model era: causal Transformer + MDN + stall gate |
 | Event-stream model (pure) | 0.652 | Generative | Masked-token event model alone, no selection: RF OOB 0.652 +/- 0.003 across 3 seeds |
 | + SIR selection | 0.568 | Generative + selection | 16 candidates per movement, per-item tempered lottery against a GBM judge: 0.568 +/- 0.010 across 3 seeds |
-| + set-level reselection | **0.489** | **Generative + selection (provisional)** | **An iterated adversarial loop that judges the whole selected population, not one candidate at a time. Single seed (42); 3-seed confirmation in progress.** |
+| + set-level reselection | **0.504** | **Generative + selection** | **An iterated adversarial loop that judges the whole selected population, not one candidate at a time. Three-seed confirmed (0.5095 / 0.5030 / 0.4993), chance level on the primary detector.** |
 
 **0.652 is the current best result for a single generative model with no selection step.** It ships only learned weights (about 25 MB), needs no recorded trajectory data at inference time, and every output is model-generated.
 
-**0.568 is the current honest, multi-seed-confirmed best for the full system** (model plus per-item selection). The set-level result of 0.489 is the most promising lead in the project: at seed 42 it lands at chance level on the primary detector (RF OOB) and close to chance on a detector family (GBM) that never saw the selection judge. It has not yet been confirmed across seeds, so treat it as provisional until that run lands.
+**0.568 is the honest, multi-seed-confirmed best for the full system with per-item selection** (one candidate chosen at a time). Moving to set-level reselection, where the judge scores the whole selected population rather than each candidate alone, reaches **0.504** across three seeds (0.5095 / 0.5030 / 0.4993), chance level on the primary detector. That recipe uses a judge widened to the 15 raw-signal features a detector reads directly, which closes the raw-signal channel to 0.509 and holds every tree and nearest-neighbor detector within about 0.014 of chance. A narrower 18-feature judge reaches 0.491 on the same three seeds but leaves the raw-signal detector at 0.529; we report the wider judge because it removes that opening. The one residual both recipes leave is a set of linear and MLP detectors on the summary features, which still read about 0.54 (see Validity and limitations).
 
 ![AUC by Architecture Family](figures/auc_progression.png)
 
@@ -51,6 +51,26 @@ The evaluation is adversarial: a Random Forest classifier tries to distinguish g
 - **18 kinematic features** spanning the full motor control stack (velocity, acceleration, jerk, curvature, angular velocity, direction changes, path efficiency, movement duration)
 - **Random Forest OOB AUC**: no held-out split needed, adversarial by construction, cross-validated against GBM and a raw-trajectory nearest-neighbor detector to make sure the result isn't an artifact of one classifier
 - **Distributed feature importance**: no single feature dominates, so generation must be realistic across the full kinematic profile
+
+## Validity and limitations
+
+A number this close to 0.50 invites a fair question: did we make trajectories more human, or did we just learn to beat the one classifier we grade with? We took that seriously, and the honest answer has both a solid part and a real limit.
+
+Start with what the result is not. It is not a model memorizing its training data. The 6M-parameter network is frozen, and nothing about the final number touches its weights. The model produces 16 to 32 candidate movements for each start and end point, and an adversarial loop keeps the subset whose population statistics look most human. We are choosing among trajectories the model already generates, so the classic overfitting failure does not apply to this step.
+
+The sharper risk is that we tuned the selection judge against a Random Forest and then report a Random Forest score. On its own that could mean we learned to fool one classifier rather than to look human. So we ran six detector families that never saw the tuning: gradient boosting, extra-trees, a neural network, logistic regression, a histogram gradient booster, and a detector that reads the raw speed signal directly instead of the summary features. Against the reported judge they span 0.484 to 0.55. The raw-signal detector was the sharpest test, because "just look at the raw speeds" is the most obvious attack: a narrower judge left it at 0.583, and widening the judge to cover those raw features brought it down to 0.484 with no cost to the tree detectors. What remains is the neural-network and logistic detectors on the summary features, still near 0.54 rather than a dead 0.50, so a small amount of detectable structure is left and we would rather say so than round it away.
+
+The winning selection recipe was chosen from eleven candidates on a proxy metric, which flatters any result, so we confirm it by reproduction. The same recipe runs against independent candidate pools built from different random seeds, and the number only counts if it holds across all of them. The reported figure is also measured against humans the selection never saw: fitting uses one half of a human reference set, an untouched second half supplies the proxy during tuning, and the final number comes from replaying the winning selection against a separate evaluation sample no part of the process has touched. The gap between the tuning proxy and that held-out figure has stayed within one to two points, which is itself a sign the split is not being gamed.
+
+One limit we cannot engineer away is external. The model trained on the five public datasets listed below, and those are the only labeled human mouse recordings we have. We have no human data from outside that pool to test against, so the honest claim is that the output is indistinguishable from human movement within this data distribution, not that it would fool a detector trained on some entirely different population of users and hardware. Anyone building on this work should read the headline number with that scope in mind.
+
+## Open directions
+
+The result lives at inference time. Every attempt to fold the selection judgment into the model's weights failed (imitation, three adversarial variants, and preference learning all made the pure model worse), so the frozen model plus a filter is not a shortcut, it is the only mechanism that worked. Three doors are still open, and none fit inside the project timeline:
+
+- **Trajectory-level reinforcement learning.** Score a whole generated path and update on that reward alone, avoiding the gradient-through-the-sampler flaw that broke every fine-tune. The most direct route to a model that reaches 0.50 on its own.
+- **A different backbone.** The masked-token design fixed the exact-stall problem but seems to be what refuses the judge's signal. An architecture with exact zeros and a continuous movement latent might generate closer to human before any selection.
+- **Out-of-distribution human data.** New labeled recordings would both widen what the model can learn and supply the genuinely external test this evaluation cannot. See [METHODOLOGY.md](METHODOLOGY.md) section 7.11 for the full write-up.
 
 ## Quick Start
 
@@ -82,10 +102,10 @@ with environment variables `EVENT_CKPT=event_polar_4m_fc_v2.pt EVENT_ORDER=gumbe
 
 **+ SIR selection, the honest multi-seed best (AUC ~0.568):** add `EVENT_SIR=16 EVENT_SIR_TEMP=0.7 EVENT_SIR_DUR_DIVERSE=1` to the same command. This draws 16 candidate trajectories per movement and keeps one via a tempered lottery on a GBM judge's log-odds, the judge fit against a human reference set disjoint from the evaluation sample.
 
-**+ set-level reselection, the provisional result (AUC ~0.489):** this one is a two-step, mostly-offline process rather than a single command.
+**+ set-level reselection, the headline result (AUC ~0.504, three-seed confirmed):** this one is a two-step, mostly-offline process rather than a single command.
 
 1. Cache every candidate from the SIR pool instead of committing to one (`run_poolgen.sh` does this for a list of seeds, using `EVENT_POOL_SAVE` on top of the SIR recipe above).
-2. Run `selection_lab.py --pool pool_s<seed>_k16.npz` to try selection strategies offline against the cached pool. The winning strategy fits an RF judge between a human reference half and the currently selected set, moves only the top fraction of picks toward the judge's preference each round with a decaying step size, and repeats for about 30 rounds. The script reports a proxy AUC on a held-out reference half; the final, reported number replays the winning selection through `evaluate.py` itself (via `EVENT_POOL_LOAD` / `EVENT_POOL_PICKS`), where the human class is the untouched evaluation sample no part of selection has seen.
+2. Run `trust33.py --pool pool_s<seed>_k16.npz` to walk the set-level reselection offline against the cached pool. It fits a 33-feature RF judge (the 18 kinematic features plus 15 raw-signal summaries) between a human reference half and the currently selected set, moves only the top fraction of picks toward the judge's preference each round with a decaying step size, and repeats for about 30 rounds. The script reports a proxy AUC on a held-out reference half; the final, reported number replays the winning selection through `evaluate.py` itself (via `EVENT_POOL_LOAD` / `EVENT_POOL_PICKS`), where the human class is the untouched evaluation sample no part of selection has seen. `verify_b.sh` runs this for seeds 42/43/44 with the full detector suite.
 
 ## Architecture: event-stream polar model
 

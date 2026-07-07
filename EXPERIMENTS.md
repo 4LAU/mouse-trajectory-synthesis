@@ -2797,3 +2797,50 @@ The MLP residual near 0.54 is real but small, and chasing it with a mixed
 judge is the wrong tool. If it needs closing later, the move is a stronger
 single non-linear judge (a gradient-boosted forest with more depth, or a
 calibrated MLP judge alone), not an average.
+
+## Protected three-seed confirmation, both judge widths (July 6, 23:47)
+
+Both set-level recipes ran the full protected confirmation across seeds
+42/43/44: honest replay through evaluate.py (human class is the untouched
+eval sample) with the complete detector suite including the raw-signal
+nearest-neighbor. Candidate pools were cached earlier, so every replay is
+offline and CPU-only, no GPU sampling. The 18-dim judge came through
+run_frontload.sh; the 33-dim judge through verify_b.sh on the same pools.
+
+18-dim RF judge (recipe A), f20d85_r30_rf:
+
+| seed | RF OOB | RF 5-fold | GBM 5-fold | Raw-NN |
+|---|---|---|---|---|
+| 42 | 0.4892 | 0.4820 | 0.5042 | 0.5396 |
+| 43 | 0.4922 | 0.4972 | 0.5252 | 0.5309 |
+| 44 | 0.4907 | 0.4783 | 0.5037 | 0.5163 |
+| mean | 0.4907 | 0.4858 | 0.5110 | 0.5289 |
+
+33-dim RF judge (recipe B), f20d85_r30_rf:
+
+| seed | RF OOB | RF 5-fold | GBM 5-fold | Raw-NN |
+|---|---|---|---|---|
+| 42 | 0.5095 | 0.5030 | 0.5171 | 0.5010 |
+| 43 | 0.5030 | 0.4987 | 0.5153 | 0.5230 |
+| 44 | 0.4993 | 0.4877 | 0.5088 | 0.5039 |
+| mean | 0.5039 | 0.4965 | 0.5137 | 0.5093 |
+
+Both are confirmed at chance on the primary detector across three seeds.
+The difference is where the residual sits. The 18-dim judge gives the lower
+primary number (0.491) but leaves the raw-signal nearest-neighbor at 0.529,
+its worst-case detector. The 33-dim judge, which adds the 15 raw-signal
+features the detector reads, closes that channel to 0.509 and holds every
+tree and nearest-neighbor family within 0.014 of chance (worst is GBM at
+0.514), at the cost of a primary that sits just above 0.50 rather than just
+below. The linear and MLP detectors on the summary features remain the one
+untamed residual for both recipes, near 0.54 to 0.55 (Section on the
+ensemble-judge probe above).
+
+Headline decision: report the 33-dim judge, 0.504 on the primary detector,
+three-seed confirmed. Two reasons. It closes the raw-signal detector, the
+most obvious outside attack ("just look at the raw speeds"), and no tree or
+nearest-neighbor detector escapes. And a number resting just above chance is
+the honest resting place of a generator a detector genuinely cannot separate,
+where a sub-0.50 figure invites a misread that the metric was overshot. The
+18-dim result stands recorded here as the alternative; both land at chance,
+and neither is cherry-picked over the other on the primary axis.

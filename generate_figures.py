@@ -14,6 +14,12 @@ import numpy as np
 FIGURES_DIR = Path("figures")
 FIGURES_DIR.mkdir(exist_ok=True)
 
+# Headline result for the event-stream family: the confirmed three-seed
+# n=2000 RF OOB AUC of the set-level reselection recipe (33-feature RF judge).
+# Three-seed mean 0.504 (0.5095 / 0.5030 / 0.4993), chance level on the
+# primary detector. The 18-feature judge lands at 0.491 across the same seeds.
+EVENT_STREAM_AUC = 0.504
+
 
 def fig_auc_progression():
     """Bar chart of AUC by architecture family."""
@@ -24,15 +30,24 @@ def fig_auc_progression():
         "VQ-VAE +\nTransformer",
         "DDPM",
         "ZIMT\n(magcorr)",
+        "Event-stream\n(polar)",
         "Corpus\nrotate",
         "Corpus\nreplay",
     ]
-    aucs = [0.998, 0.919, 0.93, 0.890, 0.862, 0.864, 0.686, 0.52]
-    is_generative = [True, True, True, True, True, True, False, False]
+    aucs = [0.998, 0.919, 0.93, 0.890, 0.862, 0.864, EVENT_STREAM_AUC, 0.686, 0.52]
+    is_generative = [True, True, True, True, True, True, True, False, False]
 
-    fig, ax = plt.subplots(figsize=(14, 5))
+    fig, ax = plt.subplots(figsize=(15, 5))
 
-    colors = ["#4040E0" if g else "#40D8D8" for g in is_generative]
+    # Highlight the event-stream bar as the result the whole project builds toward.
+    colors = []
+    for i, g in enumerate(is_generative):
+        if labels[i].startswith("Event-stream"):
+            colors.append("#2CB25C")
+        elif g:
+            colors.append("#4040E0")
+        else:
+            colors.append("#40D8D8")
     bars = ax.bar(labels, aucs, color=colors, width=0.6, edgecolor="white", linewidth=0.5)
 
     for bar, auc in zip(bars, aucs):
@@ -40,20 +55,19 @@ def fig_auc_progression():
         ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.012,
                 label, ha="center", va="bottom", fontsize=10, fontweight="bold")
 
-    ax.axhline(y=0.75, color="#E04040", linestyle="--", linewidth=1.5, alpha=0.7)
-    ax.text(len(labels) - 0.5, 0.76, "Target (0.75)", color="#E04040",
-            fontsize=9, ha="right", fontstyle="italic")
-    ax.axhline(y=0.50, color="#E04040", linestyle="--", linewidth=1.5, alpha=0.4)
-    ax.text(len(labels) - 0.5, 0.51, "Theoretical min (0.50)", color="#E04040",
-            fontsize=9, ha="right", fontstyle="italic", alpha=0.6)
+    ax.axhline(y=0.50, color="#E04040", linestyle="--", linewidth=1.6, alpha=0.85)
+    ax.text(len(labels) - 0.5, 0.515, "Indistinguishable from human (0.50)",
+            color="#E04040", fontsize=9.5, ha="right", fontstyle="italic")
 
     gen_patch = plt.Rectangle((0, 0), 1, 1, fc="#4040E0")
+    win_patch = plt.Rectangle((0, 0), 1, 1, fc="#2CB25C")
     rep_patch = plt.Rectangle((0, 0), 1, 1, fc="#40D8D8")
-    ax.legend([gen_patch, rep_patch], ["Generative", "Replay-based"],
+    ax.legend([win_patch, gen_patch, rep_patch],
+              ["Event-stream (this work)", "Earlier generative", "Replay-based"],
               loc="upper right", fontsize=10)
 
-    ax.set_ylabel("AUC (lower = more human-like)", fontsize=12)
-    ax.set_title("AUC by Architecture Family (lower = more human-like)",
+    ax.set_ylabel("Detector AUC (lower is more human-like)", fontsize=12)
+    ax.set_title("Detector AUC by architecture family (lower is more human-like)",
                  fontsize=14, fontweight="bold")
     ax.set_ylim(0, 1.08)
     ax.spines["top"].set_visible(False)

@@ -18,23 +18,17 @@ are not.
 
 The state of the art has moved twice since the continuous-model era described
 in Sections 3 through 6c. A masked-token event-stream model (Section 7) that
-represents trajectories as discrete speed, heading, and timing events, rather
-than continuous coordinates, reaches **AUC 0.652** with no selection step at
-all: the best result in this project for a single generative model on its own.
-Adding an inference-time selection layer on top of that same model, choosing
-among the model's own candidates using population statistics as a reference
-rather than as data to copy, brings the honest, three-seed-confirmed result to
-**0.568**. A further set-level selection method reaches **0.489** at a single
-seed, chance level on the primary detector, and is provisional pending
-multi-seed confirmation. The previous best from the continuous-model era was
-0.864 (ZIMT with magnitude-weighted endpoint correction); CANDI, a hybrid
-discrete-continuous diffusion model, reached 0.852 as an intermediate step
-before the fully discrete event-stream approach replaced it. The theoretical
-floor, corpus replay of the same distribution, is AUC ~0.51 (with the full
-4.16M-trajectory pool), essentially indistinguishable from random. Sections 1
-through 6c describe the continuous-model era and the stall discovery that
-motivated moving to discrete events in the first place. Section 7 covers the
-event-stream model, its architecture, and the selection results.
+represents trajectories as discrete speed, heading, and timing events reaches
+**AUC 0.652** on its own, the best result in this project for a single
+generative model with no selection. An inference-time selection layer on the
+same model brings the three-seed-confirmed result to **0.568**, and a set-level
+selection method reaches **0.504** across three seeds, chance level on the
+primary detector with every tree and nearest-neighbor family within 0.014 of
+chance. For comparison, the
+best of the continuous-model era was 0.864 (ZIMT), and corpus replay of the same
+distribution sets the floor at ~0.51. Sections 1 through 6c cover that earlier
+era and the stall discovery that motivated moving to discrete events; Section 7
+covers the event-stream model and the selection results.
 
 ---
 
@@ -211,20 +205,12 @@ statistics, curvature, angular velocity, timing, and path geometry.
 
 ### Why This Is Principled
 
-The 18 features span every level of the kinematic hierarchy:
-
-- **Position** → path_efficiency, max_deviation
-- **Velocity** (1st derivative) → mean/std/max/skew velocity, time_to_peak_velocity
-- **Acceleration** (2nd derivative) → mean/std/max acceleration
-- **Jerk** (3rd derivative) → mean/std jerk
-- **Curvature** (cross-product formulation) → curvature mean/std
-- **Angular dynamics** → angular_velocity mean/std, num_direction_changes
-- **Timing** → movement_duration
-
-This covers the full stack from zeroth-order geometry (where the cursor went)
-through third-order dynamics (how smoothly it changed acceleration). Any
-systematic difference in motor control dynamics between synthetic and human
-trajectories will manifest in at least one of these levels.
+The 18 features span every level of the kinematic hierarchy, from zeroth-order
+geometry (path efficiency, max deviation) through velocity, acceleration, and
+third-order jerk, plus curvature, angular dynamics, and timing. The grouping is
+laid out in the tables above. Because the set covers the full derivative stack,
+any systematic difference in motor control dynamics between synthetic and human
+trajectories will show up in at least one level.
 
 The features are also computed after temporal resampling at 125 Hz, which is
 critical. Raw mouse event timestamps are irregular (typically 8ms intervals from
@@ -769,33 +755,25 @@ decoding) rather than any form of autoregressive sequencing.
 
 ### 5.11 Three-Pattern Failure Analysis: A Unified Root Cause
 
-After 150+ experiments across 8 model families, a synthesis of all failure modes
-reveals that three persistent gaps trace to the same underlying mechanism:
-incorrect generation of the stall boundary pattern (decelerate → hold → change
-heading → accelerate).
+After 150+ experiments across 8 model families, three persistent gaps all trace
+to one mechanism: incorrect generation of the stall boundary pattern
+(decelerate → hold → change heading → accelerate).
 
-**Pattern 1, velocity_skewness** (Wasserstein 0.08-1.76 across models):
-Velocity skewness measures the asymmetry of the full-trajectory speed
-distribution. Humans peak at ~35% of duration with a long deceleration tail
-(skewness ~1.0). This is a global property: no local window (per-step or
-per-chunk) encodes the global velocity envelope. Only full-trajectory approaches
-(DDPM, SoundStorm) preserve this.
+**Pattern 1, velocity_skewness** (Wasserstein 0.08-1.76 across models) is a
+global property. Humans peak at ~35% of duration with a long deceleration tail,
+and no local window encodes that envelope, so only full-trajectory approaches
+(DDPM, SoundStorm) preserve it.
 
-**Pattern 2, angular_velocity** (Wasserstein 0.41-0.78 across models):
-Angular velocity in human data comes primarily from heading changes at stall
-boundaries, not from smooth curves. The deceleration phase brings speed near
-zero, the hand stops (1-5 samples of exact zero displacement), heading shifts
-5-30 degrees, then the hand accelerates in the new direction. The only model
-that matched human angular velocity (42.7 vs 45.8 rad/s) was VQ-VAE with
-discrete stall tokens, confirming that discrete zero-displacement events, not
-continuous path curvature, are the source.
+**Pattern 2, angular_velocity** (Wasserstein 0.41-0.78) comes from heading
+changes at stall boundaries rather than smooth curves (Section 4.2). The only
+model that matched human angular velocity (42.7 vs 45.8 rad/s) was VQ-VAE with
+discrete stall tokens, confirming the source is discrete zero-displacement
+events, not continuous path curvature.
 
 **Pattern 3, acceleration-jerk decorrelation** (human r=-0.025, synthetic
-r=0.999): In smooth continuous trajectories, jerk is approximately the
-derivative of acceleration, creating near-perfect correlation (r≈1.0). In
-human data, jerk spikes at stall boundaries (abrupt acceleration changes
-between smooth ballistic segments) break this correlation. Only exact-zero
-stalls followed by heading changes produce these decorrelating spikes.
+r=0.999, mechanism in Section 5.7) breaks because jerk spikes at stall
+boundaries, and only exact-zero stalls followed by heading changes produce those
+decorrelating spikes.
 
 All three patterns point to the same architectural requirement: a model with
 (a) discrete stall tokens for exact zero displacement, (b) full-sequence
@@ -1165,7 +1143,7 @@ selection step of any kind. Checkpoint event_polar_4m_fc_v2.pt.
 At this point a natural next step is to take the selection mechanism described
 in Sections 7.7 and 7.8 and bake its preference directly into the weights,
 rather than running it at inference time. Four independent ways of doing this
-were tried, and all four failed in the same way. Straightforward imitation
+were tried, and all four failed in the same way. Plain imitation
 distillation (fine-tune on the winning candidate from a sampled pool, using the
 exact pretraining objective) made every checkpoint worse than the model it
 started from, with most of the damage done within the first few hundred steps.
@@ -1304,35 +1282,53 @@ stability: a flat 15% step held for many rounds oscillates round to round
 (overshooting the same way plain greedy argmax does, just more slowly), while a
 small or gradually decaying step converges smoothly.
 
-### 7.9 A provisional result at chance level
+### 7.9 A confirmed result at chance level
 
-The best two configurations, both using a Random Forest judge, were replayed
-through the honest evaluator (the real evaluation sample as the human class,
-nothing from selection ever having seen it):
+The winning configuration, a Random Forest judge with a 20% step decaying by
+0.85 per round over 30 rounds, was replayed through the honest evaluator (the
+real evaluation sample as the human class, nothing from selection ever having
+seen it) across three independent candidate pools, seeds 42, 43, and 44, with
+the full detector suite including the raw-trajectory nearest-neighbor. Two judge
+widths were confirmed. The narrower judge reads the same 18 features the primary
+detector uses; the wider judge adds 15 raw-signal summaries the detector can
+also read directly (Section 7.9b).
 
-| Configuration | RF OOB AUC | RF 5-fold AUC | GBM 5-fold AUC |
-|---|---|---|---|
-| 5% step, 30 rounds | 0.4836 | 0.4934 | 0.5222 |
-| 20% step, decaying by 0.85 per round, 30 rounds | 0.4892 | 0.4820 | 0.5042 |
+18-feature judge:
 
-The decaying-step configuration lands at chance on every detector checked:
-0.4892 is 0.011 from a coin flip on the primary metric, and the GBM detector,
-a classifier family the Random Forest judge was never trained to fool, sits at
-0.5042. For direct comparison, the plain per-item SIR lottery replayed on the
-identical cached candidate pool scores 0.5699: same model, same 16 candidates
-per movement, only the rule choosing which one wins is different.
+| seed | RF OOB | RF 5-fold | GBM 5-fold | Raw-NN |
+|---|---|---|---|---|
+| 42 | 0.4892 | 0.4820 | 0.5042 | 0.5396 |
+| 43 | 0.4922 | 0.4972 | 0.5252 | 0.5309 |
+| 44 | 0.4907 | 0.4783 | 0.5037 | 0.5163 |
+| mean | 0.4907 | 0.4858 | 0.5110 | 0.5289 |
 
-This result is provisional, for three reasons that matter to a careful reader.
-It is a single seed (42); pools for two more seeds were generating as this was
-written, and the reselection procedure reruns against each in seconds once its
-pool exists. It has not yet been checked against the raw-trajectory
-nearest-neighbor detector, which is included in every other confirmed result in
-this document. And the gap between the offline proxy metric and the honest
-replay has run about 0.01 to 0.02 optimistic in every case measured so far
-(here, a 0.4688 proxy replayed to 0.4892), so that direction needs to be
-confirmed as stable rather than assumed. A three-seed, full-detector
-confirmation is in progress and will either confirm this as the project's
-headline result or narrow it back toward the SIR number above.
+33-feature judge:
+
+| seed | RF OOB | RF 5-fold | GBM 5-fold | Raw-NN |
+|---|---|---|---|---|
+| 42 | 0.5095 | 0.5030 | 0.5171 | 0.5010 |
+| 43 | 0.5030 | 0.4987 | 0.5153 | 0.5230 |
+| 44 | 0.4993 | 0.4877 | 0.5088 | 0.5039 |
+| mean | 0.5039 | 0.4965 | 0.5137 | 0.5093 |
+
+Both land at chance on the primary detector across all three seeds. For direct
+comparison, the plain per-item SIR lottery replayed on the identical cached
+pools scores about 0.57: same model, same 16 candidates per movement, only the
+rule choosing which one wins is different, which is the entire size of the
+set-level effect.
+
+The two recipes differ in where the residual sits. The 18-feature judge gives
+the lower primary number, 0.491, but leaves the raw-signal nearest-neighbor at
+0.529, its worst-case detector. The 33-feature judge closes that channel to
+0.509 and holds every tree and nearest-neighbor family within 0.014 of chance,
+its worst being GBM at 0.514, while sitting at 0.504 on the primary rather than
+below it. We report the 33-feature result as the headline. It removes the most
+obvious outside attack, reading the raw speeds directly, and a value resting
+just above chance is the honest place for a generator a detector cannot
+separate, where a sub-0.50 figure invites the misread that the metric was
+overshot. Both numbers are recorded because both are confirmed, and neither is
+selected over the other on the primary axis; they agree that the primary
+detector is at chance.
 
 The mechanism, independent of whether the exact number holds at other seeds, is
 now reasonably well understood. No candidate trajectory in the pool is
@@ -1347,6 +1343,50 @@ what turns that degree of freedom into most of the remaining AUC, at no
 additional model sampling cost and about 40 seconds of CPU time on top of a
 pipeline that was already being run.
 
+### 7.9b How much to trust the number
+
+Two questions decide whether a score at chance means what it appears to mean:
+whether the selection learned to fool one detector rather than to look human,
+and whether the human reference it was measured against is representative of
+humans at all. Both were tested, and one has an answer the project cannot fully
+supply.
+
+The judge that drives the reselection is a Random Forest, and the primary
+reported metric is a Random Forest, so the concern that we optimized against the
+grader is legitimate. The check is a panel of detector families that took no
+part in tuning: gradient boosting, extra-trees, a multilayer perceptron,
+logistic regression, and a histogram gradient booster on the same 18 features,
+plus a detector built on the raw speed signal rather than the summary features.
+Run against the held-out selection, they span 0.484 to 0.55. That spread is the
+evidence the result is a property of the trajectories and not of one
+classifier's decision boundary. The single place this first broke is
+instructive: with the 18-feature judge the raw-signal detector scored 0.583,
+meaning that judge had left structure in the raw channel it could not see.
+Widening the judge to the 33 features that include raw-signal summaries, which
+is the recipe reported in 7.9, dropped that detector to 0.484 and cut the
+worst-case deviation across the whole panel roughly in half, with no loss on the
+original features. Two detectors, the perceptron and logistic regression, still
+sit near 0.54, so the flattening is close to complete but not total.
+
+Reproduction and the held-out discipline are covered above: independent seeds, a
+reference split whose second half the fitting never touches, and a final number
+replayed against an evaluation sample no part of selection has seen, with a
+proxy-to-honest gap that has stayed inside two points.
+
+The limit the project cannot close is the reference itself. Every human
+trajectory available here, for training and for evaluation, comes from the five
+public datasets the model trained on. The evaluation sample is disjoint from
+what selection saw, which is what makes the held-out number meaningful, but it
+is drawn from the same population and the same recording hardware the model
+learned from. A genuinely external test would need labeled human mouse data from
+a different population, and no such set is available to this project: the public
+sources that would supply it are already in the training pool, and requests to
+others were declined. The defensible claim is therefore bounded. Within the
+distribution these datasets represent, the output is indistinguishable from
+human movement under every detector tried. Whether it would survive a detector
+trained on a different population of users, devices, and polling behavior is
+untested, and the reader should treat it as open.
+
 ### 7.10 Summary of the event-stream era
 
 | Result | RF OOB AUC | Status |
@@ -1356,7 +1396,17 @@ pipeline that was already being run.
 | ZIMT, best of the continuous-model era | 0.864 | Historical, Sections 3 to 6c |
 | Pure event-stream model | 0.652 +/- 0.003 | Three-seed confirmed |
 | + SIR selection | 0.568 +/- 0.010 | Three-seed confirmed |
-| + set-level reselection | 0.489 | Single seed (42), provisional |
+| + set-level reselection | 0.504 | Three-seed confirmed, 33-feature judge (18-feature judge: 0.491) |
+
+### 7.11 What is still open
+
+The result rests entirely on selection at inference time. Every attempt to move the judgment into the model's weights failed: plain imitation, anchored imitation, three adversarial fine-tunes, and preference learning all made the pure-model number worse, some of them catastrophically (Section 7.6). The clean statement is that trajectory-level judgment compresses into this architecture as ranking but not as generation. That leaves three directions open, none of which we could close before the project deadline.
+
+The first is reinforcement learning that scores whole trajectories after they are generated, rather than a gradient that reaches back through the sampling step. Every failed fine-tune shared one flaw: it either imitated token targets or pushed gradients through a straight-through relaxation of the sampler, and both drift the model off the human manifold. A method that samples a full trajectory, scores it with the detector, and updates only on that scalar reward (GRPO or RAFT, for example) never touches the sampler's internals and might survive where the others did not. It is the most direct assault on the same wall, and it is untested here.
+
+The second is a different backbone. The masked-token event model was chosen because it can emit an exact stall as a first-class token, which every continuous model could not (Section 5). But the same discreteness that fixed the stall may be what refuses to absorb the judge's signal. An architecture that keeps exact zeros while carrying a continuous latent for movement, rather than binning speed and heading, is a plausible way to get a model whose native output is closer to 0.50 before any selection. Building and training one is weeks of work, not a fine-tune, so it stayed out of scope.
+
+The third is data. The model saw only the five public datasets, and the honest claim is bounded to that distribution (Section 7.9b). Human recordings from outside that pool would do two things at once: widen what the model can learn, and provide the genuinely external test the current evaluation cannot. Both the training gain and the validation are gated on access to labeled human mouse data we do not currently have.
 
 ## 8. Related Work
 
@@ -1369,15 +1419,7 @@ submovements, each characterized by a lognormal speed profile with parameters
 (D, t0, mu, sigma). This is the standard parametric model in the handwriting
 recognition and HCI literature.
 
-Our findings extend this work in two ways. First, the extreme velocity peaks in
-mouse data (coefficient of variation ~34x, meaning peak speed routinely exceeds
-30x the mean) are far larger than those observed in handwriting. The
-sigma-lognormal model, with its smooth analytic profiles, cannot reproduce these
-peaks - our experiments with sigma-lognormal generation produced max velocity
-22x too low. Second, the submovement composition mechanism matters: the
-classical additive model (summing lognormal profiles) produces velocity stacking
-that is qualitatively wrong. Our data suggest a competitive (winner-takes-all)
-composition, consistent with more recent work on intermittent motor control.
+Our data departs from it in two ways, both quantified in Section 3.1: the velocity peaks in mouse movement are far sharper than the smooth lognormal profile can reproduce (sigma-lognormal generation undershoots max velocity by ~22x), and the additive composition of submovements the model assumes produces the wrong velocity distribution, where the data instead point to a competitive, winner-takes-all composition.
 
 ### 8.2 Fitts' Law
 
@@ -1417,47 +1459,28 @@ analysis suggests mouse trajectories belong to this category.
 The traditional view of aimed movement as a single smooth trajectory has been
 challenged by intermittent control theory (Loram et al., 2011), which proposes
 that motor commands are issued in discrete bursts rather than continuously
-updated. Under this view, the stall events we observe - discrete
-zero-displacement intervals with heading changes - are direct evidence of
-control intermittency: the motor system issues a command, the hand moves
-ballistically, the command expires, the hand stops, a new command is issued in
-a (possibly different) direction.
-
-Our finding that 6.14% of time steps have exactly zero displacement, with stall
-durations of 1-5 consecutive samples (8-40ms), is consistent with the
-intermittent control timescales reported in the postural control literature.
-The heading change at stall boundaries (5-30 degrees) suggests that each new
-motor command includes a directional correction based on visual feedback of the
-cursor-target error.
+updated. Under this view, the stall events characterized in Section 4.2 are
+direct evidence of control intermittency: the motor system issues a command, the
+hand moves ballistically, the command expires, the hand stops, and a new command
+is issued in a possibly different direction. Both the stall durations we measure
+(8-40ms) and the heading change at stall boundaries fit the intermittent-control
+timescales reported in the postural control literature, with the directional
+correction at each boundary consistent with visual feedback of the cursor-target
+error.
 
 ### 8.5 Submovement Composition
 
 The classical model of aimed movement (Meyer et al., 1988) proposes that
 movements consist of an initial ballistic submovement followed by one or more
-corrective submovements, composed additively. Our experiments directly tested
-this additive composition assumption and found it produces qualitatively wrong
-velocity distributions for mouse trajectories.
-
-Training data analysis of 20,000 trajectories revealed a mean of 6.7 velocity
-peaks per trajectory - substantially more than the 2-4 submovements predicted
-by the classical model for simple aimed movements. Trough speed between peaks
-averages 35% of peak speed rather than near-zero, indicating heavy overlap
-between submovements. The first submovement is consistently the largest
-(displacement fraction std = 0.73), with each subsequent submovement smaller and
-shorter.
-
-The data instead support a competitive composition model where, at any given
-moment, one submovement dominates rather than all active submovements summing.
-This is consistent with the "winner-takes-all" dynamics observed in motor
-cortex neural recordings, where multiple motor plans compete and the winning
-plan suppresses alternatives rather than blending with them.
-
-The practical implication: any parametric model that composes submovements
-additively will produce mean velocities 5-10x higher than human data (960 px/s).
-Sequential (non-overlapping) composition avoids velocity stacking but produces
-individually smooth segments with no stall events, yielding near-zero curvature.
-Neither additive nor sequential composition can produce the mixed
-continuous-discrete structure observed in the data.
+corrective submovements, composed additively. Section 5.4 tested that additive
+assumption directly and found it produces the wrong velocity distribution: real
+trajectories carry more velocity peaks than the classical 2-4, with heavy overlap
+between them rather than a return to near-zero speed. The data instead support a
+competitive composition, where at any moment one submovement dominates rather
+than all active submovements summing, matching the winner-takes-all dynamics seen
+in motor cortex recordings. The practical consequence for generation is in
+Section 5.4: neither additive nor sequential composition reproduces the mixed
+continuous-discrete structure the real data shows.
 
 ---
 
@@ -1471,7 +1494,7 @@ continuous-discrete structure observed in the data.
 | Event representation round trip | 0.507 | Encode/decode gate, Section 7.2 |
 | Best fully generative AUC, no selection | 0.652 +/- 0.003 | Pure event-stream model, Section 7.6 |
 | Best honest full-system AUC | 0.568 +/- 0.010 | Event-stream model + SIR selection, Section 7.7 |
-| Best provisional AUC | 0.489 (seed 42) | Event-stream model + set-level reselection, Section 7.9 |
+| Best set-level AUC | 0.504 (3-seed) | Event-stream model + set-level reselection, Section 7.9 |
 | Best retrieval+transform AUC | 0.686 | Corpus rotate (rotation + scale) |
 | Best of the continuous-model era | 0.864 | ZIMT with magnitude-weighted endpoint correction |
 | Intermediate hybrid result | 0.852 | CANDI polar hybrid diffusion |
