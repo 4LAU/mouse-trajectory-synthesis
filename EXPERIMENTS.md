@@ -467,12 +467,12 @@ ZIMT's learned joint distribution of kinematic features, especially:
 | Experiment | AUC (n=200) | AUC (n=2000) | Key Change | Result |
 |------------|-------------|--------------|------------|--------|
 | ZIMT baseline | 0.878 | 0.878 | Standard: linear last-20% correction, uniform timestamps | Baseline |
-| ZIMT guided (strength=0.3) | 0.968 | — | Shift MDN means toward endpoint, quadratic schedule | WORSE: out-of-distribution outputs |
-| ZIMT guided (strength=0.1) | 0.939 | — | Lower guidance | Still worse |
-| ZIMT guided (strength=0.05) | 0.913 | — | Minimal guidance | Still worse than baseline |
+| ZIMT guided (strength=0.3) | 0.968 | | Shift MDN means toward endpoint, quadratic schedule | WORSE: out-of-distribution outputs |
+| ZIMT guided (strength=0.1) | 0.939 | | Lower guidance | Still worse |
+| ZIMT guided (strength=0.05) | 0.913 | | Minimal guidance | Still worse than baseline |
 | **ZIMT magcorr** | **0.799** | **0.864** | Magnitude-weighted correction across all steps | **Best ZIMT variant** |
-| ZIMT magcorr (gate_bias=0) | 0.797 | — | More stalls with magcorr | Similar to default |
-| ZIMT stall_inject_v2 | 0.791 | — | Curvature-aware stalls + cubic correction | Stall injection helps slightly |
+| ZIMT magcorr (gate_bias=0) | 0.797 | | More stalls with magcorr | Similar to default |
+| ZIMT stall_inject_v2 | 0.791 | | Curvature-aware stalls + cubic correction | Stall injection helps slightly |
 
 ### ZIMT Guided MDN Sampling (FAILED)
 
@@ -498,7 +498,7 @@ time_to_peak_velocity drops from 0.76 to 0.44. The velocity profile is much more
 
 **Result at n=2000**: AUC 0.864. Modest improvement. New bottleneck: angular_velocity_mean (0.506
 Wasserstein), time_to_peak_velocity (0.496), angular_velocity_std (0.413). Feature importances
-are spread out — no single feature dominates.
+are spread out, no single feature dominates.
 
 **Lesson**: Better endpoint correction helps (velocity profile improves significantly) but the
 fundamental joint distribution mismatch remains. ZIMT's learned distribution doesn't capture
@@ -509,12 +509,12 @@ angular dynamics correctly.
 ### Key Discovery: Pure Retrieval Beats All Enhancements
 
 With the full 4.16M pool, plain corpus replay (translate-only, cubic-ease endpoint correction)
-achieves AUC **0.52** at n=2000 — essentially indistinguishable from human. Every enhancement
+achieves AUC **0.52** at n=2000, essentially indistinguishable from human. Every enhancement
 attempted made it WORSE by introducing detectable artifacts.
 
 | Experiment | AUC (n=2000) | Type | Why Worse |
 |------------|-------------|------|-----------|
-| **corpus_replay** | **0.52** | Pure retrieval + translate | **BEST** — real data is optimal |
+| **corpus_replay** | **0.52** | Pure retrieval + translate | **BEST**, real data is optimal |
 | corpus_perturb_v7 | 0.645 | Magnitude scaling + perp jitter | Perturbation changes direction counts |
 | corpus_sim | 0.682 | Similarity transform (rotate+scale) | Rotation changes direction counts |
 | corpus_replay_v2 | 0.558 | Magnitude-weighted correction | Distributed correction alters more steps |
@@ -524,13 +524,13 @@ attempted made it WORSE by introducing detectable artifacts.
 
 Top discriminators at n=2000: num_direction_changes (0.255 Wasserstein, 0.083 importance),
 movement_duration (0.035, 0.079), curvature_mean (0.229, 0.060). The perturbation changes
-direction counts and curvature — even 3% magnitude scaling + 1.5% perpendicular jitter is
+direction counts and curvature, even 3% magnitude scaling + 1.5% perpendicular jitter is
 detectable.
 
 ### corpus_sim (Similarity Transform, FAILED)
 
 Applied rotate + scale to map donor start/end exactly to query start/end, eliminating endpoint
-correction entirely. AUC 0.682 — worse than plain replay because:
+correction entirely. AUC 0.682, worse than plain replay because:
 - Rotation preserves relative angles between consecutive steps, but `num_direction_changes`
   depends on absolute step signs, which rotation changes
 - Scaling changes step magnitudes, pushing borderline stalls above/below thresholds
@@ -539,7 +539,7 @@ correction entirely. AUC 0.682 — worse than plain replay because:
 ### corpus_replay_v2 (Magnitude-Weighted Correction, FAILED)
 
 Replaced cubic-ease endpoint correction (concentrated in last 25%) with magnitude-weighted
-correction spread across all moving steps. AUC 0.558 — worse than cubic-ease (0.514) because:
+correction spread across all moving steps. AUC 0.558, worse than cubic-ease (0.514) because:
 - Distributing correction everywhere alters many small direction decisions
 - Cubic-ease is better because it concentrates changes in the deceleration phase, mimicking
   natural human endpoint adjustment
@@ -578,7 +578,7 @@ The optimal strategy with a large enough pool is pure retrieval + translation.
 Attempted to fine-tune ZIMT by backpropagating through differentiable kinematic feature
 computation. Three iterations, all failed due to **exposure bias**.
 
-**Architecture**: Two-phase generation — Phase 1 generates reference trajectories without
+**Architecture**: Two-phase generation, Phase 1 generates reference trajectories without
 gradient (autoregressive, fast), Phase 2 teacher-forces from references in a single forward
 pass with gradient. Uses Gumbel-Softmax for differentiable MDN component selection and
 straight-through estimator for stall gating.
@@ -586,16 +586,16 @@ straight-through estimator for stall gating.
 | Iteration | Loss | Grad Clip | AUC (n=200) | Key Issue |
 |-----------|------|-----------|-------------|-----------|
 | FM iter 1 (L2, clip=10) | L2 | 10 | 0.870 | Gradients 1000-10000x above clip → 99% signal lost |
-| FM iter 2 (L1, clip=100) | L1 | 100 | — | Angular velocity WORSENED: 0.437 → 0.736 → 0.890 |
-| FM iter 3 (clamped feats) | L1 | 100 | — | Exposure bias confirmed: more training = worse inference |
+| FM iter 2 (L1, clip=100) | L1 | 100 | | Angular velocity WORSENED: 0.437 → 0.736 → 0.890 |
+| FM iter 3 (clamped feats) | L1 | 100 | | Exposure bias confirmed: more training = worse inference |
 
-**Root cause — exposure bias**: Teacher-forced training pushes model parameters in directions
+**Root cause, exposure bias**: Teacher-forced training pushes model parameters in directions
 that improve loss when given ground-truth inputs, but these same parameter changes compound
 errors during autoregressive inference. Angular velocity gap WORSENED monotonically with more
 FM training iterations. This is a fundamental limitation of teacher-forced fine-tuning, not a
 hyperparameter issue.
 
-**Prior attempt — autoregressive with gradient**: Computation graph through T sequential forward
+**Prior attempt, autoregressive with gradient**: Computation graph through T sequential forward
 passes caused GPU memory explosion (612 CPU seconds, 4GB working set by iteration 2). Abandoned
 in favor of the two-phase approach.
 
@@ -608,7 +608,7 @@ Generate N candidate trajectories per query, select the one closest to human fea
 |-------------|-------------|-----------|
 | 8 | 0.892 | Variance collapse |
 
-**Result**: AUC 0.892 — WORSE than baseline 0.864. Selecting trajectories closest to the
+**Result**: AUC 0.892, WORSE than baseline 0.864. Selecting trajectories closest to the
 human mean kills feature VARIANCE. Features like path_efficiency (0.170→0.425 Wasserstein),
 movement_duration (0.128→0.344) became highly discriminative because distributions were too
 narrow. The RF classifier detects reduced variance as easily as shifted means.
@@ -631,7 +631,7 @@ Wasserstein). All velocity/acceleration features below 0.012. Curvature features
 
 | Feature | Wasserstein | Note |
 |---------|------------|------|
-| num_direction_changes | 0.330 | Only HIGH feature — rotation changes absolute step signs |
+| num_direction_changes | 0.330 | Only HIGH feature, rotation changes absolute step signs |
 | curvature_mean | 0.115 | Acceptable |
 | curvature_std | 0.108 | Acceptable |
 | max_deviation | 0.062 | Good |
@@ -639,8 +639,7 @@ Wasserstein). All velocity/acceleration features below 0.012. Curvature features
 
 **Key insight**: Rotation preserves relative angles and scale-invariant features (velocity_skewness,
 time_to_peak_velocity, path_efficiency) but changes absolute step signs, which
-num_direction_changes depends on. This is the same mechanism as corpus_sim (0.682) —
-essentially the same approach, confirming the result.
+num_direction_changes depends on. This is the same mechanism as corpus_sim (0.682), essentially the same approach, confirming the result.
 
 **Status**: Below the 0.75 target but uses geometric transformation of real data, not a neural
 generative model.
@@ -672,7 +671,7 @@ generative model.
    distributions that are too narrow. The RF classifier detects reduced variance as easily as
    shifted means.
 
-3. **Geometric transforms of real data work well**: Corpus rotate achieves 0.686 — below the
+3. **Geometric transforms of real data work well**: Corpus rotate achieves 0.686, below the
    0.75 target. But rotation changes num_direction_changes (the only remaining gap), so it
    cannot reach corpus replay's 0.52.
 
@@ -684,10 +683,10 @@ generative model.
 Literature review across handwriting synthesis, speech/audio generation, robotics, and motion
 capture identified 9 novel approaches not yet attempted. Ranked by how directly they address
 our two known root causes: (1) the stall representation gap (6% of human timesteps are exact
-zero displacement — no continuous model produces this), and (2) exposure bias in autoregressive
+zero displacement, no continuous model produces this), and (2) exposure bias in autoregressive
 training (teacher-forced fine-tuning worsens free-running inference).
 
-### Tier 1 — Directly addresses a known root cause
+### Tier 1, Directly addresses a known root cause
 
 **1. Hybrid Discrete-Continuous Diffusion (CANDI-style)**
 
@@ -719,7 +718,7 @@ tail of the previous chunk. Compounding error drops from 200 decision points (pe
 
 - **Why novel vs. what we tried**: ZIMT generates one step at a time (exposure bias). Our
   DDPM generates the full 200-step trajectory at once (smooth conditional means). Chunking is
-  the middle ground — holistic within-chunk generation avoids per-step compounding, while
+  the middle ground, holistic within-chunk generation avoids per-step compounding, while
   chunk-level sequencing avoids global smoothing.
 - **Can reuse**: Existing DDPM U-Net backbone, adapted for chunk-length inputs with overlap
   conditioning.
@@ -731,12 +730,11 @@ tail of the previous chunk. Compounding error drops from 200 decision points (pe
 Ref: SoundStorm (Borsos et al., 2023), MaskGIT (Chang et al., CVPR 2022)
 
 Uses our existing VQ-VAE codebook (validated: 30 px/s error, 1024/1024 entries used) with a
-new generation paradigm. Instead of left-to-right autoregressive (which caused mode collapse —
-420/1024 tokens used), start with all tokens masked and iteratively unmask in confidence order.
+new generation paradigm. Instead of left-to-right autoregressive (which caused mode collapse, 420/1024 tokens used), start with all tokens masked and iteratively unmask in confidence order.
 A bidirectional Transformer sees the full sequence context including both endpoints.
 
 - **Why novel vs. what we tried**: Our VQ-VAE + autoregressive Transformer generated
-  left-to-right (mode collapse, error compounding). This is bidirectional — the model sees
+  left-to-right (mode collapse, error compounding). This is bidirectional, the model sees
   both start and end when deciding each token. Eliminates endpoint correction entirely.
   Easy tokens (mid-ballistic) fill first; hard tokens (stall transitions) refine with full
   context.
@@ -744,7 +742,7 @@ A bidirectional Transformer sees the full sequence context including both endpoi
 - **Risk**: Masked generation may not capture temporal causality as well as autoregressive.
   Confidence-based ordering may not align with trajectory structure.
 
-### Tier 2 — Strong theoretical fit, moderate risk
+### Tier 2, Strong theoretical fit, moderate risk
 
 **4. Decoupled Shape + Speed Generation (Two-Thirds Power Law)**
 
@@ -757,7 +755,7 @@ power law (v = gamma * kappa^(-1/3)) provides a physics prior: humans slow down 
 - **Why novel**: All our models generate (x, y, t) jointly. This factored approach isolates
   curvature (our hardest feature) into a dedicated shape model, with speed constrained by
   physics. The v147 experiment (DDPM spatial + real timing = AUC 0.82) validates the
-  factored premise — the spatial path is already good enough if timing is right.
+  factored premise, the spatial path is already good enough if timing is right.
 - **Risk**: Reintegrating shape + speed back to (x,y,t) may introduce artifacts. Stall
   events need separate handling (speed = 0 violates the power law).
 
@@ -773,7 +771,7 @@ distance).
 - **Why novel**: Our parametric models (min-jerk, sigma-lognormal) used fixed functional
   forms. ProDMP's basis functions are learned from data and capture the full covariance
   structure. Reduces the generation problem from 200-D sequence to ~30-D vector.
-- **Risk**: DMP produces smooth trajectories by construction — stalls need augmentation via
+- **Risk**: DMP produces smooth trajectories by construction, stalls need augmentation via
   a separate discrete model. Integration of smooth DMP + stall injection is the same
   hybrid challenge we've hit before.
 
@@ -787,12 +785,12 @@ likelihood), no adversarial training instability, naturally handles variable-len
 
 - **Why novel**: Architecturally distinct from everything tried. Not diffusion, not an MDN,
   not a VAE. Exact likelihood avoids the ELBO gap. Invertibility means every training example
-  maps to a unique latent code — no information loss.
+  maps to a unique latent code, no information loss.
 - **Demonstrated**: Controllable motion generation conditioned on desired direction, directly
   analogous to our (start, end) conditioning.
 - **Risk**: Invertibility constraint limits expressiveness of each layer. Training can be slow.
 
-### Tier 3 — Interesting, higher risk or incremental
+### Tier 3, Interesting, higher risk or incremental
 
 **7. Neural SDE with Signal-Dependent Noise**
 
@@ -822,7 +820,7 @@ feature distributions. Multiple energies compose via learned fusion weights.
   exposure bias. Our rejection sampling operated post-hoc and killed variance. Energy
   guidance steers the distribution during generation, preserving variance.
 - **Risk**: Requires differentiable approximations of the 18 kinematic features (curvature
-  involves division by |v|^3 — numerically unstable near stalls). Conflicting energy
+  involves division by |v|^3, numerically unstable near stalls). Conflicting energy
   gradients may cause oscillation.
 
 **9. Mamba/S4 State-Space Backbone (Drop-in for ZIMT)**
@@ -831,21 +829,21 @@ Ref: Mamba (Gu & Dao, 2023), MamTra (arXiv 2603.12342)
 
 Replace ZIMT's 6-layer Transformer with a selective state-space model. Linear-time inference,
 selective state propagation (learn what to remember/forget). The state space mechanism is
-a learned linear dynamical system — natural fit for trajectory dynamics.
+a learned linear dynamical system, natural fit for trajectory dynamics.
 
 - **Why novel**: Different inductive bias than attention. Selective state propagation may
   better capture velocity/acceleration momentum than position-based attention.
 - **Risk**: Backbone swap is low-effort but likely incremental. Same MDN output head, same
-  training procedure — unlikely to close the 0.864→0.75 gap alone.
+  training procedure, unlikely to close the 0.864→0.75 gap alone.
 
 ### Implementation Priority
 
 For a generative model below AUC 0.75, recommended order:
-1. ~~Action Chunking (#2) — simplest, reuses DDPM backbone, directly solves exposure bias~~ **TRIED, FAILED (AUC 0.957)**
-2. ~~SoundStorm on VQ-VAE (#3) — reuses existing codebook, novel generation paradigm~~ **TRIED, FAILED (AUC 0.996)**
-3. CANDI hybrid diffusion (#1) — most theoretically sound, addresses stalls without VQ-VAE quantization bottleneck
-4. Decoupled Shape + Speed (#4) — partially validated by v147 (DDPM spatial + real timing = 0.82)
-5. MoGlow (#6) — exact likelihood, no mode collapse, but still autoregressive
+1. ~~Action Chunking (#2), simplest, reuses DDPM backbone, directly solves exposure bias~~ **TRIED, FAILED (AUC 0.957)**
+2. ~~SoundStorm on VQ-VAE (#3), reuses existing codebook, novel generation paradigm~~ **TRIED, FAILED (AUC 0.996)**
+3. CANDI hybrid diffusion (#1), most theoretically sound, addresses stalls without VQ-VAE quantization bottleneck
+4. Decoupled Shape + Speed (#4), partially validated by v147 (DDPM spatial + real timing = 0.82)
+5. MoGlow (#6), exact likelihood, no mode collapse, but still autoregressive
 
 ## Chunk Diffusion Experiment (2026-05-15)
 
@@ -856,7 +854,7 @@ Diffusion Policy (Chi et al., RSS 2023). Generates 25-step (~200ms) chunks via D
 with DDIM sampling, sequenced autoregressively.
 
 - **Model**: 1D U-Net (48→96→192 channels), ~1.17M params
-- **Input**: Noisy chunk (B, 25, 3) — dx, dy, stall_logit
+- **Input**: Noisy chunk (B, 25, 3), dx, dy, stall_logit
 - **Conditioning**: Global (log_dist, log_dur, cos_a, sin_a) + Local (rem_dx, rem_dy, rem_frac, progress, cum_dx, cum_dy) + Context encoder (5-step tail of previous chunk)
 - **Diffusion**: 200 steps cosine schedule, x_0 prediction, DDIM sampling (50 steps, eta=0.3)
 - **Stall modeling**: Joint 3rd channel (stall logit +3.0/-3.0), sigmoid threshold at inference
@@ -869,11 +867,11 @@ Best checkpoint: epoch 67, val_loss 0.148.
 
 ### Results
 
-**AUC 0.957 at n=2000 — FAILED.**
+**AUC 0.957 at n=2000, FAILED.**
 
 | Feature | Wasserstein | Note |
 |---------|------------|------|
-| velocity_skewness | 1.764 | *** Catastrophic — no global velocity awareness |
+| velocity_skewness | 1.764 | *** Catastrophic, no global velocity awareness |
 | angular_velocity_mean | 0.775 | *** HIGH |
 | angular_velocity_std | 0.655 | *** HIGH |
 | time_to_peak_velocity | 0.537 | *** HIGH |
@@ -887,7 +885,7 @@ angular_velocity_std (0.080).
 
 ### Why It Failed
 
-**No global trajectory awareness.** Each 25-step chunk generates in isolation — the
+**No global trajectory awareness.** Each 25-step chunk generates in isolation, the
 5-step context and local conditioning (remaining_frac, progress) are insufficient to
 convey where in the global velocity profile the chunk sits. Chunk at 20% progress
 (peak acceleration) looks identical to chunk at 80% (deceleration tail) because the
@@ -903,7 +901,7 @@ Full-trajectory diffusion (DDPM) preserves global shape but over-smooths.
 Per-chunk AR is the worst of both: no global awareness AND chunk-boundary artifacts.
 
 This confirms that the next architecture must have full-sequence context at every
-generation step — pointing to bidirectional approaches (SoundStorm/MaskGIT).
+generation step, pointing to bidirectional approaches (SoundStorm/MaskGIT).
 
 ## Frontier Research Synthesis (2026-05-15)
 
@@ -916,18 +914,18 @@ All three persistent gaps in our generative models trace to a single mechanism:
 incorrect generation of the decelerate → hold → change heading → accelerate pattern
 at stall boundaries.
 
-**Pattern 1 — velocity_skewness**: Requires global trajectory awareness. The velocity
+**Pattern 1, velocity_skewness**: Requires global trajectory awareness. The velocity
 profile is asymmetric (peak at 35%, long decel tail). Full-trajectory models preserve
 this; chunk and per-step models destroy it because no local window encodes the global
 velocity envelope.
 
-**Pattern 2 — angular_velocity**: Comes from heading changes at stall boundaries
+**Pattern 2, angular_velocity**: Comes from heading changes at stall boundaries
 (decel→hold→heading change→reaccel), NOT from smooth curves. The only model that
 matched human angular velocity (42.7 vs 45.8) was VQ-VAE with discrete stall tokens
 at 55% stall rate. The stalls were wrong (55% vs 6%) but the angular velocity
 mechanism was correct.
 
-**Pattern 3 — accel-jerk decorrelation**: Human r=-0.025, all synthetic r=0.999. Jerk
+**Pattern 3, accel-jerk decorrelation**: Human r=-0.025, all synthetic r=0.999. Jerk
 spikes at stall transitions (abrupt acceleration changes between smooth ballistic
 segments) break the derivative relationship. Only exact-zero stalls followed by
 heading changes produce these spikes. Continuous models always have smooth
@@ -940,7 +938,7 @@ acceleration→jerk relationships.
 | **MoMask** (Guo et al.) | CVPR 2024 | MaskGIT on VQ motion tokens → SOTA human motion generation. Closest analogue to our problem. |
 | **MAR** (Li et al.) | NeurIPS 2024 | Masked autoregressive with per-token diffusion loss. Continuous tokens without VQ. |
 | **MaskGCT** | ICLR 2025 | Masked generative codec transformer for speech. Non-autoregressive, full bidirectional context. |
-| **CARP** (Desai et al.) | Dec 2024 | Autoregression across SCALE not TIME — generate coarse shape, then refine. Matches diffusion quality at AR speed. |
+| **CARP** (Desai et al.) | Dec 2024 | Autoregression across SCALE not TIME, generate coarse shape, then refine. Matches diffusion quality at AR speed. |
 | **JointDiff** | ICLR 2026 | Joint continuous+discrete diffusion for trajectories with discrete events. |
 | **IMPACT** | CVPR 2025 | Iterative masked prediction for action chunking. Extends MaskGIT to robotics. |
 | **MDG** | 2025 | Masked discrete generation for molecular conformations. Same paradigm, different domain. |
@@ -1016,7 +1014,7 @@ token sequences (32.4M tokens, 1025 vocab including stall token 0).
 | From-scratch generation | 0.996 | Cold-start collapse: all-MASK → model predicts stall (37% confidence) → locks in all-stall |
 | generate_refine (donor init) | 0.996 | Spatial shape wrong despite iterative refinement |
 | Soft decoding (expected displacement) | 0.997 | Probability-weighted displacement doesn't help |
-| Donor token perturbation | 0.914 | VQ-VAE quantization bottleneck — accumulated tokens create wrong path shapes |
+| Donor token perturbation | 0.914 | VQ-VAE quantization bottleneck, accumulated tokens create wrong path shapes |
 
 ### Root Cause: VQ-VAE Quantization Bottleneck
 
@@ -1028,7 +1026,7 @@ quantization destroys spatial smoothness. Key diagnostics:
 - Angular velocity: wrong (quantized directions don't match continuous)
 - Path efficiency: wrong (quantized path length differs from continuous)
 - Donor token perturbation (AUC 0.914): even starting from real donor tokens and only replacing
-  a few with SoundStorm predictions gives 0.914 — the quantization is the bottleneck, not the
+  a few with SoundStorm predictions gives 0.914, the quantization is the bottleneck, not the
   sequence model
 
 **Lesson**: VQ-VAE-based generation is a dead end for this task. The codebook is validated for
@@ -1071,8 +1069,8 @@ raw donor coordinates (no VQ-VAE). Systematic parameter sweep:
 | K=50 + length matching (ratio 0.3) | 0.717 | Length matching HURTS |
 | K=50 + stall jitter (directional) | 0.763 | Curvature artifacts |
 | K=50 + stall jitter (random) | 0.799 | Worse curvature artifacts |
-| K=50 + Gaussian smoothing | — | Destroyed angular velocity and curvature |
-| K=50 + pixel rounding | — | angular_velocity 0.55 Wass, curvature 0.33 Wass |
+| K=50 + Gaussian smoothing | | Destroyed angular velocity and curvature |
+| K=50 + pixel rounding | | angular_velocity 0.55 Wass, curvature 0.33 Wass |
 
 Best enhanced corpus rotate: **AUC 0.670** at K=50 with distance matching only.
 Still not a neural generative approach.
@@ -1100,19 +1098,19 @@ Still not a neural generative approach.
 | SoundStorm generate_refine | 0.996 | Generative | Spatial shape wrong |
 | SoundStorm soft decode | 0.997 | Generative | No improvement |
 
-### Architectures Tried: 3 of 9 — All Failed
+### Architectures Tried: 3 of 9, All Failed
 
 | # | Architecture | Status | AUC | Failure Mode |
 |---|-------------|--------|-----|-------------|
 | 2 | Action Chunking | FAILED | 0.957 | No global velocity awareness |
 | 3 | SoundStorm/MaskGIT | FAILED | 0.996 | VQ-VAE quantization bottleneck |
-| 1 | CANDI hybrid diffusion | **NEXT** | — | Addresses stalls without VQ-VAE |
-| 4 | Decoupled Shape+Speed | Untried | — | Partially validated by v147 |
-| 5 | ProDMP | Untried | — | Smooth by construction, needs stall augmentation |
-| 6 | MoGlow | Untried | — | Exact likelihood, but still AR |
-| 7 | Neural SDE | Untried | — | Can't produce exact stalls |
-| 8 | Energy-Guided Diffusion | Untried | — | Numerically unstable near stalls |
-| 9 | Mamba | Untried | — | Likely incremental over ZIMT |
+| 1 | CANDI hybrid diffusion | **NEXT** | | Addresses stalls without VQ-VAE |
+| 4 | Decoupled Shape+Speed | Untried | | Partially validated by v147 |
+| 5 | ProDMP | Untried | | Smooth by construction, needs stall augmentation |
+| 6 | MoGlow | Untried | | Exact likelihood, but still AR |
+| 7 | Neural SDE | Untried | | Can't produce exact stalls |
+| 8 | Energy-Guided Diffusion | Untried | | Numerically unstable near stalls |
+| 9 | Mamba | Untried | | Likely incremental over ZIMT |
 
 ## CANDI Hybrid Discrete-Continuous Diffusion (2026-05-26)
 
@@ -1151,14 +1149,14 @@ First trained on distance-normalized (dx,dy) displacements.
 |--------|-------------|-------------|-----------|
 | CFG=2.0, eta=0.0 | 0.863 | 0.950 | angular_velocity_std 0.34 Wass |
 | CFG=1.0, eta=0.0 | 0.841 | 0.948 | Similar |
-| CFG=0.0, eta=0.0 | 0.856 | — | — |
-| CFG=2.0, eta=1.0 | 0.889 | — | Stochastic adds noise |
+| CFG=0.0, eta=0.0 | 0.856 | | |
+| CFG=2.0, eta=1.0 | 0.889 | | Stochastic adds noise |
 
-**200-sample AUC is unreliable** — Cartesian showed 0.86 at n=200 but 0.95 at n=2000.
+**200-sample AUC is unreliable**, Cartesian showed 0.86 at n=200 but 0.95 at n=2000.
 The RF needs enough data to detect consistent subtle artifacts.
 
 **Key discriminators at n=2000**: angular_velocity (0.34 Wasserstein), max_deviation (0.28),
-path_efficiency (0.25), curvature (0.19/0.24). All path-shape features — the model gets
+path_efficiency (0.25), curvature (0.19/0.24). All path-shape features, the model gets
 velocity/acceleration magnitudes right but direction sequences wrong.
 
 ### Root Cause: Cartesian (dx,dy) Can't Capture Angular Dynamics
@@ -1199,9 +1197,9 @@ Two training runs:
 |--------|-------------|-------------|-----------------|
 | 20ep, CFG=1.0 | 0.810 | 0.919 | Beats Cartesian (0.950) |
 | 30ep, CFG=1.0 | 0.881 | 0.917 | Barely better |
-| **30ep, CFG=0.0** | **0.720** | **0.852** | **New best — no guidance** |
+| **30ep, CFG=0.0** | **0.720** | **0.852** | **New best, no guidance** |
 | 30ep, CFG=2.0 | 0.815 | 0.922 | CFG hurts |
-| 30ep, CFG=0.0, eta=0.7 | — | 0.862 | Stochastic adds noise |
+| 30ep, CFG=0.0, eta=0.7 | | 0.862 | Stochastic adds noise |
 
 ### Critical Bug Fix: Endpoint Correction in Polar Mode
 
@@ -1210,7 +1208,7 @@ model output (dividing both channels by speed_scale, making delta_heading contri
 to magnitude weights). The fix: compute step magnitudes from the reconstructed (cum_x, cum_y)
 positions instead.
 
-This bug fix improved AUC from **0.917 → 0.852** — a larger improvement than any hyperparameter
+This bug fix improved AUC from **0.917 → 0.852**, a larger improvement than any hyperparameter
 change. The distorted correction weights were systematically warping path shapes.
 
 ### Key Findings
@@ -1245,7 +1243,7 @@ change. The distorted correction weights were systematically warping path shapes
 | movement_duration | 0.151 | |
 | All velocity/accel features | < 0.05 | Excellent |
 
-RF feature importances spread out — no single feature dominates (top: mean_jerk 0.110,
+RF feature importances spread out, no single feature dominates (top: mean_jerk 0.110,
 movement_duration 0.080, mean_acceleration 0.072).
 
 ## Updated Scoreboard (2026-05-27)
@@ -1279,12 +1277,12 @@ movement_duration 0.080, mean_acceleration 0.072).
 | 1 | **CANDI hybrid diffusion** | **BEST** | **0.854** | **Best generative. Angular velocity + curvature remain.** |
 | 2 | Action Chunking | FAILED | 0.957 | No global velocity awareness |
 | 3 | SoundStorm/MaskGIT | FAILED | 0.996 | VQ-VAE quantization bottleneck |
-| 4 | Decoupled Shape+Speed | Untried | — | Partially validated by v147 |
-| 5 | ProDMP | Untried | — | Smooth by construction, needs stall augmentation |
-| 6 | MoGlow | Untried | — | Exact likelihood, but still AR |
-| 7 | Neural SDE | Untried | — | Can't produce exact stalls |
-| 8 | Energy-Guided Diffusion | Untried | — | Numerically unstable near stalls |
-| 9 | Mamba | Untried | — | Likely incremental over ZIMT |
+| 4 | Decoupled Shape+Speed | Untried | | Partially validated by v147 |
+| 5 | ProDMP | Untried | | Smooth by construction, needs stall augmentation |
+| 6 | MoGlow | Untried | | Exact likelihood, but still AR |
+| 7 | Neural SDE | Untried | | Can't produce exact stalls |
+| 8 | Energy-Guided Diffusion | Untried | | Numerically unstable near stalls |
+| 9 | Mamba | Untried | | Likely incremental over ZIMT |
 
 ## Flow Matching + Post-Processing Optimization (2026-05-30)
 
@@ -1348,9 +1346,9 @@ Re-optimized config N=2000 evaluation pending.
 |---------|------------|---------------|
 | angular_velocity_std | 0.379 | 0.066 |
 | angular_velocity_mean | 0.332 | 0.062 |
-| path_efficiency | 0.291 | — |
+| path_efficiency | 0.291 | |
 | curvature_std | 0.232 | 0.067 |
-| max_deviation | 0.231 | — |
+| max_deviation | 0.231 | |
 | curvature_mean | 0.186 | 0.070 |
 | time_to_peak_velocity | 0.171 | 0.058 |
 | mean_jerk | 0.029 | **0.131** |
@@ -1367,11 +1365,11 @@ acceleration that the model cannot replicate.
 ### N=100 vs N=2000 Reliability Problem
 
 The N=100 sweep showed AUCs of 0.526-0.527 for top configs, suggesting the model was near
-0.50. The N=2000 eval revealed the true AUC is **0.854** — a 0.33 discrepancy. The RF at
+0.50. The N=2000 eval revealed the true AUC is **0.854**, a 0.33 discrepancy. The RF at
 N=100 simply lacks enough data to detect subtle systematic artifacts.
 
 This invalidates all N=100-based optimization done to date. A reliable proxy metric is needed
-before further optimization — one that's stable at small N and predicts N=2000 AUC.
+before further optimization, one that's stable at small N and predicts N=2000 AUC.
 
 ### Next Steps
 
@@ -1396,7 +1394,7 @@ movements, or accepting the correlation gap and focusing on other features.
 
 **5. Feature-aware training loss.** Add auxiliary losses during training that match
 batch-level angular velocity and curvature statistics against human targets. The path_loss
-infrastructure already reconstructs trajectories from polar predictions — extend to
+infrastructure already reconstructs trajectories from polar predictions, extend to
 angular velocity matching.
 
 ---
@@ -2765,3 +2763,37 @@ One honesty note for the record: we compare configs using the honest
 evaluator and disjoint-reference proxies, and treat the external
 suite as a reported diagnostic, so picking among two or three configs
 does not meaningfully overfit its numbers.
+
+## The ensemble judge backfires; the RF judge on 33 features is the pick (July 6, 21:45)
+
+The widened judge left a residual in the smooth-boundary detectors, MLP
+and logistic regression at 0.54 to 0.55, so we tried a judge that averages
+the log-odds of a random forest, a standardized logistic model, and a small
+MLP on the same 33 features. It made things worse. Seed 42 honest replay
+rose to 0.5237 (the RF judge held 0.5095), and the external suite got worse
+almost everywhere:
+
+| detector | RF judge (33 dim) | ensemble judge (33 dim) |
+|---|---|---|
+| RF OOB (honest eval) | 0.5095 | 0.5237 |
+| XGBoost | 0.5100 | 0.5299 |
+| ExtraTrees | 0.5098 | 0.5365 |
+| HistGBM | 0.5174 | 0.5396 |
+| MLP | 0.5497 | 0.5185 |
+| LogReg | 0.5421 | 0.5471 |
+| RF on raw-signal | 0.4835 | 0.5125 |
+
+Averaging log-odds across families dilutes each one. The forest can no
+longer move picks hard enough to flatten the tree-detectable structure,
+so it trades the MLP gap it partly closed (0.55 to 0.52) for higher tree
+and raw-signal scores. The forest is also the family the honest primary
+metric uses, so diluting it costs us on the exact axis that counts.
+
+Verdict: the single RF judge on 33 features is the configuration to carry
+forward. On seed 42 it holds every detector within 0.05 of chance and puts
+the honest RF at 0.5095, a hair closer to perfect than the 18-dim judge's
+0.4892. Seed 43 reproduced it on its own pool: proxy 0.4870 and 0.4928.
+The MLP residual near 0.54 is real but small, and chasing it with a mixed
+judge is the wrong tool. If it needs closing later, the move is a stronger
+single non-linear judge (a gradient-boosted forest with more depth, or a
+calibrated MLP judge alone), not an average.

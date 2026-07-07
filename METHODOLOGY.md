@@ -16,14 +16,25 @@ trained model - no corpus lookup, no nearest-neighbor retrieval, no template
 replay. Model weights loaded at import time are permitted; trajectory databases
 are not.
 
-The current state of the art for fully generative synthesis under this
-constraint is **AUC 0.852** (CANDI hybrid discrete-continuous diffusion with
-polar representation). The previous best was 0.864 (ZIMT with magnitude-weighted
-endpoint correction). The theoretical floor - corpus replay of the same
-distribution - is AUC ~0.52 (with the full 4.16M-trajectory pool), essentially
-indistinguishable from random. The gap between 0.852 and 0.52 is dominated by
-angular velocity distribution mismatch, path efficiency, and curvature — all
-path-shape features that persist across model families.
+The state of the art has moved twice since the continuous-model era described
+in Sections 3 through 6c. A masked-token event-stream model (Section 7) that
+represents trajectories as discrete speed, heading, and timing events, rather
+than continuous coordinates, reaches **AUC 0.652** with no selection step at
+all: the best result in this project for a single generative model on its own.
+Adding an inference-time selection layer on top of that same model, choosing
+among the model's own candidates using population statistics as a reference
+rather than as data to copy, brings the honest, three-seed-confirmed result to
+**0.568**. A further set-level selection method reaches **0.489** at a single
+seed, chance level on the primary detector, and is provisional pending
+multi-seed confirmation. The previous best from the continuous-model era was
+0.864 (ZIMT with magnitude-weighted endpoint correction); CANDI, a hybrid
+discrete-continuous diffusion model, reached 0.852 as an intermediate step
+before the fully discrete event-stream approach replaced it. The theoretical
+floor, corpus replay of the same distribution, is AUC ~0.51 (with the full
+4.16M-trajectory pool), essentially indistinguishable from random. Sections 1
+through 6c describe the continuous-model era and the stall discovery that
+motivated moving to discrete events in the first place. Section 7 covers the
+event-stream model, its architecture, and the selection results.
 
 ---
 
@@ -35,7 +46,8 @@ path-shape features that persist across model families.
 4. [Discrete Stall Events: The Key Insight](#4-discrete-stall-events-the-key-insight)
 5. [Representational Limitation Analysis](#5-representational-limitation-analysis)
 6. [Perturbed Replay: Proof the Gap Is Bridgeable](#6-perturbed-replay-proof-the-gap-is-bridgeable)
-7. [Related Work](#7-related-work)
+7. [The Event-Stream Era: A Masked-Token Model and Selection](#7-the-event-stream-era-a-masked-token-model-and-selection)
+8. [Related Work](#8-related-work)
 
 ---
 
@@ -192,7 +204,7 @@ for 41%. This means a generator cannot achieve low AUC by matching one or two
 features - it must match the full joint distribution across all 18 dimensions.
 
 This is both a strength and a challenge. It is a strength because it makes the
-evaluation robust: a model that games one feature will be caught by the others.
+evaluation reliable: a model that games one feature will be caught by the others.
 It is a challenge because it means there is no single "fix" - improvement
 requires simultaneously matching velocity profiles, acceleration dynamics, jerk
 statistics, curvature, angular velocity, timing, and path geometry.
@@ -484,10 +496,10 @@ zero-displacement events that drive human curvature:
 | Parametric submovement (min-jerk) | No - smooth analytic curves | ~0.3 | 1.00 | Additive submovements stack velocity; segments are individually smooth |
 | Speed-bin GRU (discrete speed, continuous XY) | Approximate (near-zero bin) | ~0.3 | ~0.99 | Spatial drift in XY accumulates; path efficiency 0.59 vs human 0.84 |
 | DDPM + post-hoc speed dips | Approximate (near-zero) | ~15 | ~0.999 | Perturbations create direction changes at non-zero speed, not at stalls |
-| Chunk Diffusion (25-step) | Approximate (stall logit channel) | ~0.2 | ~0.96 | No global trajectory awareness — velocity_skewness 1.76 Wasserstein |
-| VQ-VAE + AR Transformer | Yes - stall token (0,0) | ~0.4 | ~0.89 | Mode collapse (420/1024 tokens), error compounding |
-| VQ-VAE + MaskGIT (SoundStorm) | Yes - stall token (0,0) | ~0.4 | ~0.996 | VQ-VAE quantization bottleneck — accumulated tokens create wrong path shapes |
-| **CANDI hybrid diffusion (polar)** | **Yes - discrete stall channel** | **~1300** | **~0.85** | **Angular velocity and curvature distributions still mismatched** |
+| Chunk Diffusion (25-step) | Approximate (stall logit channel) | ~0.2 | ~0.96 | No global trajectory awareness, velocity_skewness 1.76 Wasserstein |
+| VQ-VAE + AR Transformer | Yes, stall token (0,0) | ~0.4 | ~0.89 | Mode collapse (420/1024 tokens), error compounding |
+| VQ-VAE + MaskGIT (SoundStorm) | Yes, stall token (0,0) | ~0.4 | ~0.996 | VQ-VAE quantization bottleneck: accumulated tokens create wrong path shapes |
+| **CANDI hybrid diffusion (polar)** | **Yes, discrete stall channel** | **~1300** | **~0.85** | **Angular velocity and curvature distributions still mismatched** |
 
 ### 5.2 Diffusion Models: The Conditional Mean Problem
 
@@ -630,7 +642,7 @@ logits = logits_uncond + scale * (logits_cond - logits_uncond)
 
 with `scale = 3.0`. This amplifies the effect of endpoint conditioning, producing
 trajectories that more reliably reach the target endpoint. The scale of 3.0 was
-selected empirically — values below 2.0 produced insufficient endpoint accuracy,
+selected empirically. Values below 2.0 produced insufficient endpoint accuracy,
 values above 5.0 caused the model to over-commit to straight-line paths. The
 implementation is in `experiments/vqvae_ar_transformer.py` (lines 183-189).
 
@@ -695,8 +707,8 @@ with discrete zero-displacement tokens.
 
 ### 5.9 VQ-VAE + Masked Iterative Decoding (SoundStorm): The Quantization Bottleneck
 
-The SoundStorm/MaskGIT paradigm — start with all tokens masked, iteratively unmask
-in confidence order with full bidirectional context — was tested on our validated
+The SoundStorm/MaskGIT approach (start with all tokens masked, iteratively unmask
+in confidence order with full bidirectional context) was tested on our validated
 VQ-VAE codebook (1024 entries, 100% utilization, stall token 0).
 
 A 6M-parameter masked bidirectional transformer was trained for 16 epochs on 500K
@@ -704,12 +716,12 @@ tokenized trajectories, reaching 49.3% masked token prediction accuracy. Four
 generation strategies were tested:
 
 - **From-scratch generation** (all MASK → iterative unmasking): AUC 0.996. Cold-start
-  collapse — the model predicts stall token 0 at every position with 37% confidence,
+  collapse: the model predicts stall token 0 at every position with 37% confidence,
   and confidence-based unmasking locks in all-stall sequences.
 - **Iterative refinement** (donor tokens → mask 40% → re-predict): AUC 0.996. Avoids
   cold-start but spatial shape is still wrong after 12 refinement rounds.
 - **Soft decoding** (probability-weighted expected displacement instead of discrete
-  sampling): AUC 0.997. No improvement — the expected displacement is a compromise
+  sampling): AUC 0.997. No improvement: the expected displacement is a compromise
   that satisfies no constraint well.
 - **Donor token perturbation** (keep most donor tokens, mask a few, SoundStorm fills):
   AUC 0.914. Even with minimal replacement, accumulated quantized tokens create
@@ -725,7 +737,7 @@ This finding updates the assessment from Section 5.5: while VQ-VAE tokens correc
 match the problem's mixed discrete-continuous structure in principle (stall token = 0,
 motion tokens = continuous motion), the codebook quantization of the continuous
 component is too coarse for path accumulation. The 30 px/s speed reconstruction error
-(3.6% of mean speed) — acceptable for single-step reconstruction — compounds to create
+(3.6% of mean speed), acceptable for single-step reconstruction, compounds to create
 fundamentally wrong path shapes when accumulated.
 
 **Architectural implication**: The next approach must keep displacements continuous
@@ -736,13 +748,13 @@ masking channel for stall/no-stall decisions and a continuous Gaussian channel f
 
 ### 5.10 Chunk-Level Diffusion: The Global Awareness Problem
 
-Action chunking — generating 25-step chunks via DDPM and sequencing them
-autoregressively — was tested as a middle ground between per-step AR (ZIMT) and
+Action chunking (generating 25-step chunks via DDPM and sequencing them
+autoregressively) was tested as a middle ground between per-step AR (ZIMT) and
 full-trajectory diffusion (DDPM). The hypothesis: 25-step chunks are long enough
 to produce coherent internal kinematics while reducing compounding error from
 200 decision points to ~8.
 
-The result was AUC 0.957 — significantly worse than both ZIMT (0.864) and DDPM
+The result was AUC 0.957, significantly worse than both ZIMT (0.864) and DDPM
 (0.862). The primary failure mode was `velocity_skewness` at 1.764 Wasserstein,
 the worst of any model. The root cause: each chunk generates in isolation with
 only a 5-step context window and scalar progress/remaining-fraction conditioning.
@@ -762,23 +774,23 @@ reveals that three persistent gaps trace to the same underlying mechanism:
 incorrect generation of the stall boundary pattern (decelerate → hold → change
 heading → accelerate).
 
-**Pattern 1 — velocity_skewness** (Wasserstein 0.08-1.76 across models):
+**Pattern 1, velocity_skewness** (Wasserstein 0.08-1.76 across models):
 Velocity skewness measures the asymmetry of the full-trajectory speed
 distribution. Humans peak at ~35% of duration with a long deceleration tail
-(skewness ~1.0). This is a global property — no local window (per-step or
+(skewness ~1.0). This is a global property: no local window (per-step or
 per-chunk) encodes the global velocity envelope. Only full-trajectory approaches
 (DDPM, SoundStorm) preserve this.
 
-**Pattern 2 — angular_velocity** (Wasserstein 0.41-0.78 across models):
+**Pattern 2, angular_velocity** (Wasserstein 0.41-0.78 across models):
 Angular velocity in human data comes primarily from heading changes at stall
 boundaries, not from smooth curves. The deceleration phase brings speed near
 zero, the hand stops (1-5 samples of exact zero displacement), heading shifts
 5-30 degrees, then the hand accelerates in the new direction. The only model
 that matched human angular velocity (42.7 vs 45.8 rad/s) was VQ-VAE with
-discrete stall tokens — confirming that discrete zero-displacement events, not
+discrete stall tokens, confirming that discrete zero-displacement events, not
 continuous path curvature, are the source.
 
-**Pattern 3 — acceleration-jerk decorrelation** (human r=-0.025, synthetic
+**Pattern 3, acceleration-jerk decorrelation** (human r=-0.025, synthetic
 r=0.999): In smooth continuous trajectories, jerk is approximately the
 derivative of acceleration, creating near-perfect correlation (r≈1.0). In
 human data, jerk spikes at stall boundaries (abrupt acceleration changes
@@ -790,7 +802,7 @@ All three patterns point to the same architectural requirement: a model with
 context for global velocity profile awareness, and (c) bidirectional attention
 so stall boundary tokens are generated with context from both sides. This
 combination uniquely describes the SoundStorm/MaskGIT masked iterative
-decoding paradigm applied to our validated VQ-VAE codebook.
+decoding approach applied to our validated VQ-VAE codebook.
 
 ---
 
@@ -867,7 +879,7 @@ the result worse**, sometimes dramatically.
 
 | Enhancement | AUC (n=2000) | Delta from replay |
 |---|---|---|
-| None (translate-only) | 0.52 | — |
+| None (translate-only) | 0.52 | n/a |
 | 3% magnitude scaling + 1.5% perpendicular jitter | 0.645 | +0.13 |
 | Similarity transform (rotate + scale) | 0.682 | +0.16 |
 | Smooth sinusoidal perturbation | 0.780 | +0.26 |
@@ -876,8 +888,8 @@ the result worse**, sometimes dramatically.
 ### Why Enhancements Fail
 
 The 18 kinematic features form a tightly coupled joint distribution. Each
-feature depends on the full sequence of displacements, and any modification —
-even a mathematically exact similarity transform — changes the joint
+feature depends on the full sequence of displacements, and any modification,
+even a mathematically exact similarity transform, changes the joint
 distribution detectably.
 
 Specific mechanisms of detection:
@@ -930,7 +942,7 @@ Wasserstein drops from 1.57 to 0.08.
 However, the improvement is modest because the fundamental joint distribution
 mismatch remains. The new bottleneck is angular velocity (mean: 0.506
 Wasserstein, std: 0.413) and `mean_acceleration` (0.108 RF importance despite
-low individual Wasserstein — indicating the RF detects joint distribution
+low individual Wasserstein, indicating the RF detects joint distribution
 patterns).
 
 ### Guided MDN Sampling (Failed)
@@ -970,15 +982,385 @@ generated autoregressively (GRPO/RAFT).
 
 Generating N candidate trajectories per query and selecting the one closest to
 the human feature mean (normalized L2 distance across all 18 features) produced
-AUC 0.892 with N=8 — worse than the 0.864 baseline. The selection process kills
+AUC 0.892 with N=8, worse than the 0.864 baseline. The selection process kills
 feature variance: distributions become too narrow, and the RF classifier detects
 reduced variance as easily as shifted means.
 
 ---
 
-## 7. Related Work
+## 7. The Event-Stream Era: A Masked-Token Model and Selection
 
-### 7.1 Kinematic Theory and the Sigma-Lognormal Model
+Sections 3 through 6c describe the continuous-model era: the stall discovery,
+why every continuous architecture (diffusion, autoregressive GRU, parametric
+submovement models) hits a ceiling somewhere between AUC 0.86 and 1.0, and the
+VQ-VAE experiments that first tried a discrete stall token but were bottlenecked
+by codebook quantization of the motion component (Sections 5.5 and 5.9). This
+section covers what came after: a representation and a model built to avoid
+that quantization problem from the start, and a discovery, late in the project,
+that most of the remaining gap was never a generation problem at all.
+
+### 7.1 Why events, not quantized displacements
+
+The VQ-VAE work had the right instinct (a discrete token for the stall) and the
+wrong discretization target. It quantized displacement itself into a fixed
+codebook, and the resulting 30 px/s reconstruction error per step, negligible
+for one step, compounded over 50 to 200 accumulated steps into visibly wrong
+path shapes. Chunk-level diffusion (Section 5.10) taught a separate lesson: a
+model that only sees a local window at generation time has no representation of
+where it sits in the trajectory's global velocity profile, and that showed up
+as the worst velocity-skewness mismatch of any model tested.
+
+Both lessons point the same direction. The fix is not a better codebook for
+displacement. It is to discretize the thing that is naturally discrete (the
+stall, and the direction the hand takes after it) while keeping full-sequence,
+bidirectional context available at every generation step. That means moving
+away from a sequence of quantized (dx, dy) pairs and toward a sequence of
+motion events: a speed, a heading change relative to the previous heading, and
+the time until the next event. The mouse hardware itself already reports data
+this way. Pool files retained from data preparation turned out to hold the raw,
+pre-resample event stream (integer pixel positions with millisecond
+timestamps), not just the 125 Hz resampled grid used for feature extraction.
+Only about 30% of inter-event gaps sit on the nominal 8ms polling clock; the
+rest spread from 1 to 150ms. A stall, in this representation, is simply an
+event with zero speed. It does not need a special token bolted onto a
+continuous displacement space, because the representation was never continuous
+displacement to begin with.
+
+### 7.2 The event representation has almost no ceiling of its own
+
+Before training anything, the representation itself was gated: take real event
+streams from the corpus, push them through the exact encode and decode
+pipeline the model would use, and measure whether that round trip alone is
+detectable. Pure replay through the pipeline (no model involved) scored AUC
+0.496 to 0.507 across variants, essentially the same range as plain corpus
+replay (0.51). This matters because it rules out the representation itself as a
+source of ceiling: whatever score a trained model gets, the gap to 0.50 is a
+modeling problem, not a cost of the event encoding.
+
+The same gate was reapplied when the representation moved from raw (dx, dy)
+events to a polar one (speed bin, heading-increment bin, inter-event time),
+because polar coordinates need to be quantized into bins. The lossless
+float round trip matched the floor again (0.508), as it had to. But binning the
+heading increment into 256, 512, or 1024 categories cost 0.03 to 0.06 of AUC
+regardless of how fine the bins were, which rules out quantization resolution
+as the cause. The actual cause was simpler: decoding speed and heading into a
+path produces off-integer pixel positions, and real recording hardware never
+writes an off-integer position. Rounding the decoded positions back to the
+integer pixel grid removed the entire penalty at every bin resolution tested.
+This is the same finding as the original stall discovery, generalized: the
+detector keys on whether a position sits on the hardware's recording lattice,
+not on how finely the underlying motion is discretized. It fixed the decode
+contract for everything that followed: integrate speed and heading
+continuously, then round to integer pixels only at the very end of decoding.
+
+### 7.3 Architecture: a masked bidirectional model over polar events
+
+The shipped model is a 6-million-parameter, non-autoregressive Transformer in
+the MaskGIT and SoundStorm family: every event token starts masked, and tokens
+are revealed iteratively over several rounds with full bidirectional context
+available at each round, rather than being generated left to right. This
+directly answers the chunk-diffusion lesson from Section 5.10: there is no
+local window, every generation step sees the whole sequence.
+
+Each event carries a categorical speed bin and a categorical heading-increment
+bin, factored as p(speed, heading | context) = p(speed | context) times
+p(heading | speed, context), because large turns in the human corpus happen
+almost exclusively at low speed. Inter-event time is not modeled as a fixed
+clock; it is generated by a small flow-matching head on the z-scored log of the
+gap, which is what allows the model to reproduce the raw, non-uniform polling
+intervals (mostly 8ms during motion, 1 to 2ms for hardware ticks) rather than
+snapping everything to a uniform grid. Tick events (samples with no movement,
+about 10 to 15% of events) carry no heading of their own; heading persists
+through them. The model is trained on all 4.16 million trajectories in the
+corpus. The base checkpoint is event_polar_4m.pt; the shipped checkpoint,
+event_polar_4m_fc_v2.pt, adds the movement-character conditioning described in
+Section 7.5.
+
+### 7.4 The sampler and the decode contract: two knobs worth 0.17 of AUC
+
+Two decisions made after training, not during it, accounted for more AUC
+improvement than any single training change in this section.
+
+The first is reveal order. Standard MaskGIT reveals the most confident
+predictions first. For this model, the most confident heading prediction at
+almost any position is "no turn," so straight paths get locked in early and
+every later token conditions on an already-straight context. Out of the box
+this produced paths far too straight (path efficiency 0.994 versus a human
+0.949 median). The fix is the standard MaskGIT remedy: add Gumbel noise to the
+confidence score before ranking, with a choice temperature controlling how much
+randomness competes with confidence. This single knob was worth 0.12 of AUC
+(0.929 to 0.806) and needed no retraining.
+
+The second is the lattice snap. Even after the integer-pixel rounding described
+in Section 7.2, a stubborn angular-velocity gap remained, and profiling
+localized it entirely to slow frames (speed under about 3 px per frame): three
+times the human turning rate there, with every faster speed band matching.
+Decoding the same token stream without any rounding erased the gap completely,
+which pinpoints the mechanism. The model emits smooth, continuous headings at
+slow speed, and rounding a continuously-varying, off-lattice slow path to the
+pixel grid causes the rounded direction to flip almost every step. Real slow
+human movement does not do this: a person moving one pixel at a time repeats
+the same integer step, because the recording lattice is their actual output
+space, not an approximation of something smoother underneath. The fix snaps
+slow steps (speed below 2.5 px per frame) to the nearest realizable whole
+lattice step, while letting the integrated heading continue to evolve
+continuously between snaps, so no directional drift accumulates. This decode
+change, on top of a distribution-matching fine-tune described next, completed a
+chain that moved the score from 0.929 to 0.806 (sampler) to 0.791 (distribution
+matching) to 0.755 (decode contract), and a further correction restoring full
+human variance to the duration conditioning, which had been silently
+undershooting at 0.7 times human variance, brought the pure model to its first
+result under 0.70.
+
+### 7.5 Movement-character conditioning: a missing global variable
+
+After the sampler and decode fixes, the remaining gap showed up as a broken
+correlation structure rather than a broken marginal. In real trajectories,
+every pairwise combination of the acceleration and jerk features correlates at
+essentially r = 1.000: one latent "how vigorous is this movement" variable
+governs all of them together. In the pure token model these correlations were
+a patchwork, some repaired, some not, even once every individual feature's
+marginal distribution looked correct. Two attempts to fix this by pushing the
+model directly toward matching feature statistics, first a fixed-statistic
+distribution-matching fine-tune (quantile and covariance matching against real
+batches), then an adversarial critic trained on the 18 detector features, both
+made the score worse. The reason is architectural: a per-position, per-token
+training signal has no way to coordinate an outcome that only exists at the
+level of the whole decoded trajectory.
+
+The fix that worked was not a better loss but a new input. The model was given
+an explicit conditioning slot: the same 18-dimensional feature vector the
+evaluator computes, fed in through a pathway initialized at zero so training
+starts exactly at the pretrained model, and teacher-forced on each real
+trajectory's own statistics during fine-tuning. At generation time, no real
+trajectory's vector is copied. Instead, the conditioning vector is drawn from a
+kernel density estimate fitted to a bank of real feature vectors stored in the
+checkpoint, matched to the requested movement distance. Twelve thousand steps
+of this fine-tune produced the project's first clean training-side gain (from
+0.702 to 0.675 RF OOB), and the on/off comparison (conditioning present versus
+a zero vector) confirmed the model had genuinely learned to lean on the
+variable rather than ignoring it. This result also reframed the two earlier
+failures: they were not evidence that feature-level training signals cannot
+help this architecture, only that the architecture needed an explicit variable
+to receive them before it could act on them.
+
+### 7.6 The pure-model result, and why teaching the judge's ranking into the weights stops working here
+
+With the sampler, decode contract, and character conditioning in place, plus an
+empirical duration prior (drawing real per-distance-bin durations instead of a
+fitted lognormal curve, which had been quietly feeding the model
+out-of-distribution durations), the pure model reaches its confirmed best:
+
+| Seed | RF OOB AUC |
+|---|---|
+| 42 | 0.6470 |
+| 43 | 0.6544 |
+| 44 | 0.6531 |
+
+RF OOB 0.652 +/- 0.003 across three seeds. This is the number to cite for "the
+model alone, nothing else": gumbel reveal order, choice temperature 10, lattice
+snap at 2.5 px, duration standard deviation 1.0, empirical duration prior, no
+selection step of any kind. Checkpoint event_polar_4m_fc_v2.pt.
+
+At this point a natural next step is to take the selection mechanism described
+in Sections 7.7 and 7.8 and bake its preference directly into the weights,
+rather than running it at inference time. Four independent ways of doing this
+were tried, and all four failed in the same way. Straightforward imitation
+distillation (fine-tune on the winning candidate from a sampled pool, using the
+exact pretraining objective) made every checkpoint worse than the model it
+started from, with most of the damage done within the first few hundred steps.
+Mixing real human batches back in as an anchor changed the shape of the
+degradation but not its direction. A conditioned adversarial critic (the plain
+critic from Section 7.5, rerun with the character vector active so the
+generator had a pathway to act on the criticism) also regressed the score, with
+the discriminator's real-versus-fake margin growing steadily while the
+generator closed none of it. Preference learning (Diffusion-DPO: contrast the
+judge's best and worst candidate per movement, train against a frozen reference
+copy of the model) is the most informative failure: preference accuracy on held
+out pairs climbed cleanly from 0.50 to 0.87, so the model genuinely absorbed the
+judge's ranking, while generation quality collapsed monotonically and
+increasingly steeply as training continued (RF OOB rose from the 0.647 control
+past 0.86 by step 500 and past 0.96 by step 1000).
+
+The common mechanism is architectural, not a tuning failure. This model's
+training objective is to get each token's marginal distribution right at each
+position. A sampling-importance-resampling judge's winners win because of joint
+feature combinations that only exist across the whole decoded trajectory, and
+there is no way to transmit a whole-trajectory preference through a
+per-position masked-token objective without disturbing the very marginals that
+made the pretrained model good in the first place. Four independent routes to
+the same wall (fixed-statistic matching, a plain adversarial critic, a
+conditioned adversarial critic, and preference learning) is treated here as a
+closed question for this architecture: a judge's signal compresses into these
+weights in the ranking direction, but not in the generation direction.
+Selection has to remain an inference-time system, not a training target.
+
+### 7.7 SIR: selection as sampling-importance-resampling
+
+With training-time approaches closed off, the remaining lever operates purely
+at inference time. For each requested movement, the model draws K = 16
+independent candidate trajectories (each with its own character draw from the
+KDE bank, and its own duration draw, since sharing one duration draw across all
+K candidates turned out to hide an entire feature family from the selector).
+A discriminator (a gradient-boosted classifier) is fit to distinguish a
+reference set of real human trajectories, drawn from the corpus and disjoint
+from the evaluation sample, from the pool of candidates. Rather than always
+keeping the candidate the discriminator scores as most human-like, one
+candidate per movement is drawn from a tempered lottery over the
+discriminator's log-odds: a soft, weighted draw rather than an argmax.
+
+The order these were tried in matters for understanding why the lottery works.
+The first thing tried was simpler: keep whichever candidate scores closest to
+its own commanded character vector. That made the score worse (0.698 versus a
+0.651 baseline at the time), because pulling every sample toward a target
+shrinks the conditional feature variance, and the detector reads reduced
+variance just as readily as a shifted mean; this is the same family of mistake
+as lowering sampling temperature to reduce variance elsewhere in the project.
+The tempered lottery avoids this because it reshapes the realized distribution
+of the selected set toward the human one without collapsing the variety within
+it.
+
+An early version of this result was optimistic: the discriminator had been fit
+on the same feature file the evaluator uses as its human class, so the judge
+was being scored against data it had effectively already seen. Refitting the
+judge against a dedicated 4,000-trajectory reference set, drawn from the corpus
+with the evaluation indices excluded, gave the honest number. The locked
+recipe, K = 16 candidates, selection temperature 0.7 (sharper than the default
+temperature of 1.0), the empirical duration prior, and per-candidate duration
+diversity, reaches:
+
+| Seed | RF OOB AUC |
+|---|---|
+| 42 | 0.5589 |
+| 43 | 0.5781 |
+| 44 | 0.5681 |
+
+RF OOB 0.568 +/- 0.010 across three seeds. Every gain in this recipe came from
+the selection side: sharpening the lottery's temperature, widening the judge's
+kernel bandwidth a little, and fixing the duration prior all helped, in
+decreasing order of effect. Every proposal-side attempt to add more heat
+(a hotter heading distribution, a higher choice temperature, doubling the
+candidate pool to 32) either did nothing or actively hurt, and a bigger pool
+without sharper selection wasted twice the generation cost for no gain. The
+lesson that shaped the next section: the generator already drafts human-like
+paths often enough. What was left to fix lived entirely in how candidates get
+chosen.
+
+### 7.8 Selection as a set-level problem
+
+SIR still leaves about 0.068 of AUC between the honest result and chance. The
+structural reason is that SIR selects each candidate independently, but the
+detector it is trying to fool is never shown one trajectory at a time. It is
+trained on the entire selected population against the entire reference sample.
+An independent, per-movement lottery cannot trade one movement's pick against
+another's to correct a marginal that the whole selected set overshoots, and the
+tempering itself distorts the selected distribution in a way a freshly trained
+detector can still catch. This reframes the target: selection should optimize
+the distribution of the selected set as a whole, not the quality of each item
+in isolation.
+
+This reframing is cheap to test because the expensive part, generating K
+candidates per movement, is separable from the cheap part, choosing which one
+wins. Every candidate a model produces during a normal evaluation run can be
+cached (trajectory, features, and owning movement spec), and any selection rule
+can then be replayed against that cached pool in about three minutes with no
+further GPU sampling. All experiments in this subsection follow a strict
+honesty protocol: the 4,000-row disjoint reference set is split in half, all
+selection strategies fit only against half A, and a proxy AUC against the
+untouched half B is reported for every candidate strategy. The number that
+counts is always a full replay through the real evaluator, where the human
+class is the true evaluation sample that no stage of selection has ever seen.
+
+Two families of set-level strategy were tried and failed. Directly minimizing
+the L1 gap between the selected set's feature histograms and the reference
+histograms, across all 18 marginals plus the most correlated feature pairs,
+drove the summed histogram gap down by a factor of five with no improvement in
+detector AUC at all. A kernel MMD exchange, sensitive to interactions of every
+order rather than just marginals and pairs, also failed to beat the plain SIR
+baseline. Together these rule out marginal and pairwise structure as the
+location of the remaining signal: whatever the detector is still keying on is a
+higher-order joint pattern shared across every candidate in a given movement's
+pool, not something a distribution-matching objective over lower-order
+statistics can reach. This also explains why simply always keeping the judge's
+single favorite candidate (greedy argmax, no lottery) makes the score much
+worse rather than better: concentrating every pick on the judge's preferred
+region of feature space manufactures its own population-level artifact, one a
+fresh detector finds instantly.
+
+The strategy that did work treats selection as an iterated game against the
+population-level artifact directly. Fit a fresh discriminator between the
+reference half and the CURRENT selected set (not the raw candidate pool), move
+only the fraction of movements with the largest discriminator log-odds gain
+toward the discriminator's preference, and repeat with a decaying step size.
+This gives selection the population-level feedback loop that per-item SIR
+structurally cannot have: each round's judge is reacting to what the previous
+round actually produced as a set, not to individual candidates in isolation.
+Two things turned out to matter more than expected. First, the discriminator's
+own family matters more than any other setting: using a Random Forest judge,
+the same detector family the evaluator actually trains, walked the proxy AUC
+down into the 0.46 to 0.47 range, while a gradient-boosted judge stalled around
+0.51 to 0.54 no matter how the other knobs were set. Second, step size controls
+stability: a flat 15% step held for many rounds oscillates round to round
+(overshooting the same way plain greedy argmax does, just more slowly), while a
+small or gradually decaying step converges smoothly.
+
+### 7.9 A provisional result at chance level
+
+The best two configurations, both using a Random Forest judge, were replayed
+through the honest evaluator (the real evaluation sample as the human class,
+nothing from selection ever having seen it):
+
+| Configuration | RF OOB AUC | RF 5-fold AUC | GBM 5-fold AUC |
+|---|---|---|---|
+| 5% step, 30 rounds | 0.4836 | 0.4934 | 0.5222 |
+| 20% step, decaying by 0.85 per round, 30 rounds | 0.4892 | 0.4820 | 0.5042 |
+
+The decaying-step configuration lands at chance on every detector checked:
+0.4892 is 0.011 from a coin flip on the primary metric, and the GBM detector,
+a classifier family the Random Forest judge was never trained to fool, sits at
+0.5042. For direct comparison, the plain per-item SIR lottery replayed on the
+identical cached candidate pool scores 0.5699: same model, same 16 candidates
+per movement, only the rule choosing which one wins is different.
+
+This result is provisional, for three reasons that matter to a careful reader.
+It is a single seed (42); pools for two more seeds were generating as this was
+written, and the reselection procedure reruns against each in seconds once its
+pool exists. It has not yet been checked against the raw-trajectory
+nearest-neighbor detector, which is included in every other confirmed result in
+this document. And the gap between the offline proxy metric and the honest
+replay has run about 0.01 to 0.02 optimistic in every case measured so far
+(here, a 0.4688 proxy replayed to 0.4892), so that direction needs to be
+confirmed as stable rather than assumed. A three-seed, full-detector
+confirmation is in progress and will either confirm this as the project's
+headline result or narrow it back toward the SIR number above.
+
+The mechanism, independent of whether the exact number holds at other seeds, is
+now reasonably well understood. No candidate trajectory in the pool is
+individually different from what the model has always produced; every
+candidate carries the same higher-order joint structure, which is exactly why
+histogram matching and MMD matching, which only ever look at one candidate's
+features against a target distribution, found nothing to fix. Per-item
+selection had one degree of freedom it was never using: which candidate wins
+each movement, chosen with knowledge of the set the other choices create. An
+iterated adversary with a detector-matched judge and a decaying step size is
+what turns that degree of freedom into most of the remaining AUC, at no
+additional model sampling cost and about 40 seconds of CPU time on top of a
+pipeline that was already being run.
+
+### 7.10 Summary of the event-stream era
+
+| Result | RF OOB AUC | Status |
+|---|---|---|
+| Corpus replay floor | 0.51 | Retrieval, calibration point |
+| Event representation round trip | 0.507 | Encode/decode gate, confirms near-lossless representation |
+| ZIMT, best of the continuous-model era | 0.864 | Historical, Sections 3 to 6c |
+| Pure event-stream model | 0.652 +/- 0.003 | Three-seed confirmed |
+| + SIR selection | 0.568 +/- 0.010 | Three-seed confirmed |
+| + set-level reselection | 0.489 | Single seed (42), provisional |
+
+## 8. Related Work
+
+### 8.1 Kinematic Theory and the Sigma-Lognormal Model
 
 Plamondon's kinematic theory of rapid aimed movements (Plamondon, 1995)
 models handwriting and mouse trajectories as sums of lognormal velocity
@@ -997,7 +1379,7 @@ classical additive model (summing lognormal profiles) produces velocity stacking
 that is qualitatively wrong. Our data suggest a competitive (winner-takes-all)
 composition, consistent with more recent work on intermittent motor control.
 
-### 7.2 Fitts' Law
+### 8.2 Fitts' Law
 
 Fitts' law (Fitts, 1954) predicts movement duration as a logarithmic function
 of the index of difficulty (distance / target width). It is the foundational
@@ -1010,7 +1392,7 @@ feature set includes movement duration (which Fitts' law addresses) and 17 other
 features (which it does not). A generator based on Fitts' law alone can match
 duration but fails on all other features.
 
-### 7.3 Discrete Tokens for Continuous Generation
+### 8.3 Discrete Tokens for Continuous Generation
 
 The VQ-VAE + autoregressive transformer architecture follows a pattern
 established in several adjacent domains:
@@ -1030,7 +1412,7 @@ continuous dynamics, quantizing the signal into discrete tokens and modeling
 token sequences autoregressively outperforms direct continuous generation. Our
 analysis suggests mouse trajectories belong to this category.
 
-### 7.4 Intermittent Motor Control
+### 8.4 Intermittent Motor Control
 
 The traditional view of aimed movement as a single smooth trajectory has been
 challenged by intermittent control theory (Loram et al., 2011), which proposes
@@ -1048,7 +1430,7 @@ The heading change at stall boundaries (5-30 degrees) suggests that each new
 motor command includes a directional correction based on visual feedback of the
 cursor-target error.
 
-### 7.5 Submovement Composition
+### 8.5 Submovement Composition
 
 The classical model of aimed movement (Meyer et al., 1988) proposes that
 movements consist of an initial ballistic submovement followed by one or more
@@ -1085,10 +1467,14 @@ continuous-discrete structure observed in the data.
 |---|---|---|
 | Human trajectory corpus size | 4.16M trajectories | 5 public HCI datasets |
 | Evaluation features | 18 kinematic features | See Section 2 |
-| Corpus replay AUC | 0.52 (4.16M pool, mean of 3 seeds) | Practical floor |
-| Best fully generative AUC | 0.852 | CANDI polar hybrid diffusion |
+| Corpus replay AUC | 0.51 (4.16M pool) | Practical floor |
+| Event representation round trip | 0.507 | Encode/decode gate, Section 7.2 |
+| Best fully generative AUC, no selection | 0.652 +/- 0.003 | Pure event-stream model, Section 7.6 |
+| Best honest full-system AUC | 0.568 +/- 0.010 | Event-stream model + SIR selection, Section 7.7 |
+| Best provisional AUC | 0.489 (seed 42) | Event-stream model + set-level reselection, Section 7.9 |
 | Best retrieval+transform AUC | 0.686 | Corpus rotate (rotation + scale) |
-| Previous best generative | 0.892 | VQ-VAE + GRPO (checkpoint lost) |
+| Best of the continuous-model era | 0.864 | ZIMT with magnitude-weighted endpoint correction |
+| Intermediate hybrid result | 0.852 | CANDI polar hybrid diffusion |
 | Perturbed replay AUC | 0.55 (2% noise) | Section 6 |
 | Generative target | < 0.75 (open-source), < 0.50 (full success) | |
 | Top RF feature importance | 10.8% (angular_velocity_std) | Distributed importance |
@@ -1096,7 +1482,6 @@ continuous-discrete structure observed in the data.
 | Human mean velocity | ~960 px/s | Corpus statistics |
 | Human max velocity CV | ~34x | Extreme peaks |
 | Human curvature mean | ~1329 | Dominated by stall events |
-| Best generative curvature | ~1300 (CANDI polar) | Gap nearly closed |
 | Zero-displacement steps | 6.14% of all steps | Discrete stall events |
 | Stall duration | 1-5 samples (8-40ms) | Fixed USB polling intervals |
 | Timing residual autocorrelation | r = 0.65 | Motor control smoothness |
@@ -1104,8 +1489,10 @@ continuous-discrete structure observed in the data.
 | Chunk diffusion AUC | 0.957 | No global velocity awareness |
 | SoundStorm/MaskGIT AUC | 0.996 | VQ-VAE quantization bottleneck |
 | Enhanced corpus rotate AUC | 0.670 | Best rotation variant (K=50) |
-| Experiments conducted | 160+ | See EXPERIMENTS.md |
-| Model architectures tested | 10 families | See Section 5 |
+| Event-stream model size | 6M parameters | Section 7.3 |
+| SIR candidates per movement | K = 16, selection temperature 0.7 | Section 7.7 |
+| Experiments conducted | 200+ | See EXPERIMENTS.md |
+| Model architectures tested | 11 families | See Section 5 and Section 7 |
 
 ---
 
@@ -1124,5 +1511,11 @@ continuous-discrete structure observed in the data.
 | VQ-VAE | Vector-Quantized Variational Autoencoder. Learns a discrete codebook of motion tokens from continuous displacement data. |
 | CFM | Conditional Flow Matching. Learns a velocity field that transports noise to data via an ODE. |
 | DDPM | Denoising Diffusion Probabilistic Model. Learns to reverse a noise-adding process via iterative denoising. |
+| MaskGIT | Masked Generative Image Transformer. A non-autoregressive decoding scheme: all tokens start masked and are revealed iteratively, in confidence order, with full bidirectional context at each round. |
+| SoundStorm | A MaskGIT-style masked bidirectional decoder for audio tokens. The direct architectural ancestor of the event-stream model's sampler. |
+| SIR | Sampling-Importance-Resampling. Here, drawing K candidate trajectories per movement and keeping one via a tempered lottery on a judge's log-odds, rather than always keeping the judge's top pick. |
+| KDE | Kernel Density Estimate. Used to draw movement-character conditioning vectors from a bank of real feature vectors at generation time. |
+| DPO | Direct Preference Optimization. A training objective that raises the model's relative preference for a winning sample over a losing one, contrasted against a frozen reference copy of the model. |
+| ESS | Effective sample size. For a weighted lottery over K candidates, a measure of how many candidates are meaningfully contributing to the draw; ESS near K means weights are close to uniform, ESS near 1 means the draw has collapsed onto one candidate. |
 | NLL | Negative log-likelihood. Training loss for probabilistic models. |
 | RF | Random Forest. Ensemble of decision trees trained on bootstrap samples. |
