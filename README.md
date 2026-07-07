@@ -1,4 +1,4 @@
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://python.org)
 
 # Mouse Trajectory Synthesis
@@ -80,10 +80,12 @@ The result lives at inference time. Every attempt to fold the selection judgment
 git clone https://github.com/4LAU/mouse-trajectory-synthesis.git
 cd mouse-trajectory-synthesis
 pip install -e .
-python setup_data.py                                            # downloads checkpoints + eval data
+python setup_data.py                                            # checkpoints + eval data + 0.504 reproduce bundle
 python evaluate.py --experiment experiments.corpus_replay       # retrieval floor: AUC ~0.51
 python evaluate.py --experiment experiments.zimt_magcorr        # historical best continuous model: AUC ~0.864
 ```
+
+To verify the headline 0.504 directly from the downloaded bundle (CPU, about two minutes), see [Reproduce the current results](#reproduce-the-current-results).
 
 Note: `torch>=2.0` installs CPU-only by default from PyPI. For GPU acceleration, install PyTorch with CUDA support first (see [pytorch.org](https://pytorch.org/get-started/locally/)).
 
@@ -93,7 +95,17 @@ Developed on an RTX 4070 (12GB VRAM). A single consumer GPU is sufficient for al
 
 ## Reproduce the current results
 
-All of the current-generation numbers come from one checkpoint, `event_polar_4m_fc_v2.pt`, run through `experiments/event_stream_polar.py` with different environment variables controlling the sampler and the selection layer. The exact locked recipe (and every knob that was tried and rejected along the way) is logged in [EXPERIMENTS.md](EXPERIMENTS.md); the commands below are the short version.
+**Verify the headline in minutes, no GPU.** `setup_data.py` downloads the cached candidate pools and the winning picks for all three seeds. Replaying them through the evaluator reproduces the confirmed numbers exactly (0.5095 / 0.5030 / 0.4993, mean 0.504) without loading the model:
+
+```bash
+EVENT_POOL_LOAD=pool_s42_k16.npz \
+EVENT_POOL_PICKS=pool_s42_k16_picks_trust33_f20d85_r30_rf.npy \
+python evaluate.py --experiment experiments.event_stream_polar --seed 42 --no-raw-nn
+```
+
+Repeat with `s43`/`--seed 43` and `s44`/`--seed 44` for the other two seeds. The human class in this replay is the held-out evaluation sample no part of selection ever saw; the pool files contain only model-generated trajectories, so nothing here can leak the answer. Drop `--no-raw-nn` to also run the raw-sequence neural detector (slower; needs the training data split).
+
+**Rebuild everything from scratch.** All of the current-generation numbers come from one checkpoint, `event_polar_4m_fc_v2.pt` (downloaded to `training/` by `setup_data.py`), run through `experiments/event_stream_polar.py` with different environment variables controlling the sampler and the selection layer. The exact locked recipe (and every knob that was tried and rejected along the way) is logged in [EXPERIMENTS.md](EXPERIMENTS.md); the commands below are the short version.
 
 **Pure model, no selection (AUC ~0.652):**
 
@@ -159,7 +171,8 @@ mouse-trajectory-synthesis/
 ├── autoresearch/                     # Original research code (v1-v147)
 ├── METHODOLOGY.md                    # Evaluation framework and research findings
 ├── EXPERIMENTS.md                    # Full log of 200+ experiments
-└── LICENSE                           # MIT
+├── CITATION.cff                      # How to cite this work
+└── LICENSE                           # Apache-2.0
 ```
 
 ## Datasets
@@ -187,6 +200,10 @@ Model weights are trained on these publicly available datasets (4.16M total traj
 
 See [METHODOLOGY.md](METHODOLOGY.md) for detailed discussion. See [EXPERIMENTS.md](EXPERIMENTS.md) for the full log of 200+ experiments.
 
+## Citing this work
+
+If you use the code, the trained model, or build on the methodology or findings, please cite this repository. GitHub's "Cite this repository" button (from [CITATION.cff](CITATION.cff)) gives BibTeX and APA forms.
+
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Reuse of the code, trained weights, or documentation requires keeping the attribution notice.

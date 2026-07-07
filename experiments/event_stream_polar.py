@@ -32,17 +32,32 @@ torch.manual_seed(42)
 _TRAIN_DIR = Path(os.environ.get("TRAIN_DIR", "./training"))
 _DEVICE = get_device()
 
+# Replay mode (EVENT_POOL_LOAD set) returns cached trajectories and never
+# touches the sampler, so it needs neither the trained checkpoint nor the
+# duration prior. Skipping both lets the 0.504 result be reproduced from the
+# small cached pools alone, on CPU, with no model weights present.
 _ckpt_name = os.environ.get("EVENT_CKPT", "event_polar_best.pt")
-_ckpt = torch.load(_TRAIN_DIR / _ckpt_name, map_location=_DEVICE, weights_only=False)
-_cfg = _ckpt["config"]
-_DT_MEAN = float(_ckpt["dt_mean"])
-_DT_STD = float(_ckpt["dt_std"])
+_replay_only = bool(os.environ.get("EVENT_POOL_LOAD", ""))
 
-_model = EventStreamPolarModel(**_cfg).to(_DEVICE)
-_model.load_state_dict(_ckpt["model_state_dict"])
-_model.eval()
+if _replay_only:
+    _ckpt = None
+    _cfg = {}
+    _DT_MEAN = _DT_STD = float("nan")
+    _model = None
+    _duration = None
+else:
+    _ckpt = torch.load(_TRAIN_DIR / _ckpt_name, map_location=_DEVICE,
+                       weights_only=False)
+    _cfg = _ckpt["config"]
+    _DT_MEAN = float(_ckpt["dt_mean"])
+    _DT_STD = float(_ckpt["dt_std"])
 
-_duration = DurationModel(_TRAIN_DIR, std_mult=float(os.environ.get("EVENT_DUR_STD", "0.7")))
+    _model = EventStreamPolarModel(**_cfg).to(_DEVICE)
+    _model.load_state_dict(_ckpt["model_state_dict"])
+    _model.eval()
+
+    _duration = DurationModel(
+        _TRAIN_DIR, std_mult=float(os.environ.get("EVENT_DUR_STD", "0.7")))
 _N_STEPS = int(os.environ.get("EVENT_STEPS", "100"))
 _TEMP = float(os.environ.get("EVENT_TEMP", "1.0"))
 _TH_TEMP = float(os.environ.get("EVENT_TH_TEMP", "0") or 0) or None
@@ -128,9 +143,13 @@ _POOL_LOAD = os.environ.get("EVENT_POOL_LOAD", "")
 _POOL_PICKS = os.environ.get("EVENT_POOL_PICKS", "")
 assert not (_BESTOF > 1 and _SIR_K > 1), "EVENT_BESTOF and EVENT_SIR are exclusive"
 
-print(f"[event_stream_polar] ckpt={_ckpt_name} epoch={_ckpt.get('epoch')} "
-      f"steps={_N_STEPS} temp={_TEMP} th_temp={_TH_TEMP} order={_ORDER} "
-      f"round={_ROUND} bestof={_BESTOF}")
+if _replay_only:
+    print(f"[event_stream_polar] replay mode: {_POOL_LOAD} "
+          f"(sampler and checkpoint not loaded)")
+else:
+    print(f"[event_stream_polar] ckpt={_ckpt_name} epoch={_ckpt.get('epoch')} "
+          f"steps={_N_STEPS} temp={_TEMP} th_temp={_TH_TEMP} order={_ORDER} "
+          f"round={_ROUND} bestof={_BESTOF}")
 
 
 def _decode(dt_z, s_cls, th_cls, sx, sy, angle) -> Trajectory | None:

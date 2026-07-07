@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use this code, the trained model, or build on the methodology or findings, please cite this repository."
+title: "Mouse Trajectory Synthesis: an event-stream generative model indistinguishable from human movement at the kinematic level"
+authors:
+  - family-names: "Lau"
+    given-names: "Aaron"
+version: 0.1.0
+date-released: 2026-07-07
+url: "https://github.com/4LAU/mouse-trajectory-synthesis"
+license: Apache-2.0
+keywords:
+  - mouse dynamics
+  - trajectory synthesis
+  - generative models
+  - masked transformer
+  - human motor control
+abstract: >-
+  A 6M-parameter masked bidirectional Transformer over polar event streams
+  generates point-to-point mouse trajectories that a Random Forest detector
+  cannot distinguish from held-out human movement (OOB AUC 0.504 at n=2000,
+  confirmed across three seeds) after set-level adversarial reselection over
+  cached candidate pools. The repository includes the evaluation framework,
+  the full experiment journal, trained weights, and cached pools that
+  reproduce the headline number on CPU in minutes.

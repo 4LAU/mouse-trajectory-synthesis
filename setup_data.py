@@ -42,6 +42,24 @@ OPTIONAL_ASSETS = [
     "demo_pool.npz",
 ]
 
+# Everything needed to reproduce the headline 0.504 result. The cached
+# candidate pools and winning picks land in the repo root (where the replay
+# commands expect them); the event-stream checkpoint lands in training/ so
+# the sampler can regenerate pools from scratch. Replaying the cached pools
+# needs no GPU and never loads the checkpoint.
+REPRO_ASSETS_ROOT = [
+    "pool_s42_k16.npz",
+    "pool_s43_k16.npz",
+    "pool_s44_k16.npz",
+    "pool_s42_k16_picks_trust33_f20d85_r30_rf.npy",
+    "pool_s43_k16_picks_trust33_f20d85_r30_rf.npy",
+    "pool_s44_k16_picks_trust33_f20d85_r30_rf.npy",
+]
+
+REPRO_ASSETS_TRAINING = [
+    "event_polar_4m_fc_v2.pt",
+]
+
 # Balabit dataset
 BALABIT_REPO = "https://github.com/balabit/Mouse-Dynamics-Challenge.git"
 PAUSE_THRESHOLD_S = 0.200  # seconds - split movements on pauses longer than this
@@ -151,6 +169,17 @@ def download_assets(data_dir: Path, *, force: bool = False) -> None:
                 f"\n  To build it from the Balabit dataset, run:"
                 f"\n    python setup_data.py --build-demo-pool\n"
             )
+
+    # Reproduce bundle for the 0.504 headline (cached pools + picks +
+    # event-stream checkpoint). See README "Reproduce the current results".
+    print("\nDownloading the 0.504 reproduce bundle...\n")
+    for name in REPRO_ASSETS_ROOT:
+        if not _download_file(RELEASE_BASE + name, Path(name), force=force):
+            failures.append(name)
+    for name in REPRO_ASSETS_TRAINING:
+        dest = Path("training") / name
+        if not _download_file(RELEASE_BASE + name, dest, force=force):
+            failures.append(name)
 
     if failures:
         print(f"\nFailed to download: {', '.join(failures)}")
