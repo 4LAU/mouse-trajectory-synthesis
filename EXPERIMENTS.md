@@ -2631,3 +2631,63 @@ overshoot: 300 specs all jumping toward the same judge's preference
 per round is too coarse. Tuning sweep queued: smaller and decaying
 step fractions, more rounds, and an RF judge to match the detector
 family the eval actually uses.
+
+## Chance level reached at seed 42 (July 6, 20:54)
+
+The tuning sweep answered both open questions at once. Judge family
+matters more than anything: every config using an RF judge, the same
+detector family the eval actually trains, walked the proxy AUC down
+to the 0.46 to 0.47 range and stayed there. The GBM-judge configs
+stalled around 0.51 to 0.54. Step size explains the rest of the
+spread. The original frac 0.15 with 10 rounds oscillates, while small
+or decaying steps converge smoothly.
+
+Sweep results, proxy RF OOB AUC against untouched reference half B,
+all from the same SIR init at 0.5649:
+
+| config | judge | step | proxy AUC |
+|---|---|---|---|
+| f05_r30_rf | RF | 5%, 30 rounds | 0.4650 |
+| f20d85_r30_rf | RF | 20% decaying x0.85, 30 rounds | 0.4688 |
+| f10_r20_rf | RF | 10%, 20 rounds | 0.4723 |
+| f20d85_r30_gbm | GBM | 20% decaying x0.85, 30 rounds | 0.5114 |
+| f05_r30_gbm | GBM | 5%, 30 rounds | 0.5160 |
+| f15_r10_gbm | GBM | 15%, 10 rounds | 0.5387 |
+
+Honest replay of the two best configs through evaluate.py, where the
+human class is the eval sample no selection step has ever seen:
+
+| config | RF OOB | RF 5-fold | GBM 5-fold |
+|---|---|---|---|
+| f05_r30_rf | 0.4836 | 0.4934 | 0.5222 |
+| f20d85_r30_rf | 0.4892 | 0.4820 | 0.5042 |
+
+The decaying-step config lands at chance on all three detectors.
+RF OOB 0.4892 is 0.011 from coin-flip territory, and even the GBM,
+a detector family the RF judge never optimized against, sits at
+0.5042. For comparison, the per-item SIR lottery on the identical
+candidate pool replays at 0.5699.
+
+This is the number the project has been chasing. One seed, no
+Raw-NN yet, so the claim stays provisional until the protected
+three-seed full-detector confirmation on July 7. But the mechanism
+is now clear and cheap: generate 16 candidates per movement exactly
+as before, then let a set-level adversarial loop with a
+detector-matched judge and decaying step size choose which candidate
+wins. No retraining, no new generation cost, about 40 seconds of
+CPU time on top of the pipeline we already had.
+
+Why it works where everything else failed: the residual signal was
+never in any individual trajectory. Every candidate the model offers
+carries the same higher-order joint structure, which is why
+histogram matching, MMD matching, and every teach-the-model variant
+went nowhere. The population-level artifact created by per-item
+selection was the one degree of freedom nobody was using, and an
+iterated adversary that sees the whole set at once is the right tool
+to spend it.
+
+Remaining risk, in order: seed transfer (pools for 43 and 44 are
+generating tonight, the loop reruns per pool in seconds), Raw-NN
+(never included in replay probes, only the protected run will tell),
+and proxy-to-honest gap direction (it has been +0.01 to +0.02 so
+far, and held here too: proxy 0.4688 replayed to 0.4892).
