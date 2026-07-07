@@ -43,15 +43,20 @@ from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.metrics import roc_auc_score
 
 
-def rf_proxy_auc(X_sel: np.ndarray, X_ref: np.ndarray, seed: int = 42) -> float:
-    """Mirror of evaluate.py's primary detector (RF 100 trees, OOB AUC)."""
+def rf_proxy_auc(X_sel: np.ndarray, X_ref: np.ndarray,
+                 seeds=(42, 43, 44)) -> float:
+    """Mirror of evaluate.py's primary detector (RF 100 trees, OOB AUC),
+    averaged over three RF seeds to cut ranking noise."""
     n = min(len(X_sel), len(X_ref))
     X = np.vstack([X_ref[:n], X_sel[:n]])
     y = np.concatenate([np.zeros(n), np.ones(n)])
-    clf = RandomForestClassifier(n_estimators=100, oob_score=True, n_jobs=-1,
-                                 random_state=seed)
-    clf.fit(X, y)
-    return roc_auc_score(y, clf.oob_decision_function_[:, 1])
+    aucs = []
+    for seed in seeds:
+        clf = RandomForestClassifier(n_estimators=100, oob_score=True,
+                                     n_jobs=-1, random_state=seed)
+        clf.fit(X, y)
+        aucs.append(roc_auc_score(y, clf.oob_decision_function_[:, 1]))
+    return float(np.mean(aucs))
 
 
 def fit_logodds(X_pos, X_neg, X_score, trees=200, seed=0):
@@ -213,6 +218,115 @@ class HistObjective:
             self.p_cnt[pi, self.p_bin[new_ci, pi]] += 1
 
 
+class MMDObjective:
+    """Multi-bandwidth RBF MMD^2 between the selected set and reference A on
+    z-scored features. Kernels see the full joint geometry, so unlike the
+    histogram objective this penalizes interactions of every order. Supports
+    incremental swap deltas by maintaining, for every pool candidate, its
+    kernel sum against the current selected set."""
+
+    def __init__(self, X_pool, ref_a, bw_mults=(0.5, 1.0, 2.0), chunk=4096):
+        mu, sd = ref_a.mean(axis=0), ref_a.std(axis=0) + 1e-9
+        self.Z = ((X_pool - mu) / sd).astype(np.float64)
+        A = ((ref_a - mu) / sd).astype(np.float64)
+        sub = A[np.random.default_rng(0).permutation(len(A))[:1000]]
+        d2 = ((sub[:, None, :] - sub[None, :, :]) ** 2).sum(-1)
+        med = np.median(d2[d2 > 0])
+        self.gammas = np.array([1.0 / (m * med) for m in bw_mults])
+        self.chunk = chunk
+        self.n_ref = len(A)
+        self.cross = self._ksum_rows(A)
+
+    def _k_to_point(self, y):
+        d2 = ((self.Z - y) ** 2).sum(axis=1)
+        return np.exp(-self.gammas[:, None] * d2[None, :]).mean(axis=0)
+
+    def _ksum_rows(self, Y):
+        out = np.zeros(len(self.Z))
+        for y in Y:
+            out += self._k_to_point(y)
+        return out
+
+    def init_counts(self, sel_rows):
+        self.n_sel = len(sel_rows)
+        self.ssum = self._ksum_rows(self.Z[sel_rows])
+
+    def swap_delta(self, old_ci, cand_rows):
+        k_vu = np.exp(-self.gammas[:, None] * (
+            (self.Z[cand_rows] - self.Z[old_ci]) ** 2).sum(-1)[None]).mean(0)
+        k_vv = np.ones(len(cand_rows))
+        n, m = self.n_sel, self.n_ref
+        d_t1 = (2.0 * (self.ssum[cand_rows] - k_vu)
+                - 2.0 * self.ssum[old_ci] + 1.0 + k_vv)
+        d_t2 = self.cross[cand_rows] - self.cross[old_ci]
+        d = d_t1 / n**2 - 2.0 * d_t2 / (n * m)
+        d[cand_rows == old_ci] = 0.0
+        return d
+
+    def apply_swap(self, old_ci, new_ci):
+        self.ssum += self._k_to_point(self.Z[new_ci])
+        self.ssum -= self._k_to_point(self.Z[old_ci])
+
+
+def pick_exchange(pool: Pool, ref_a, ref_b, init_picks, objective,
+                  max_sweeps=15, seed=0, label="obj"):
+    """Coordinate-descent exchange under any incremental objective."""
+    picks = dict(init_picks)
+    objective.init_counts(np.asarray(sorted(picks.values())))
+    rng = np.random.default_rng(seed)
+    spec_ids = np.asarray(list(pool.spec_rows.keys()))
+    for sweep in range(max_sweeps):
+        n_moves = 0
+        for idx in spec_ids[rng.permutation(len(spec_ids))]:
+            rows = pool.spec_rows[int(idx)]
+            old = picks[int(idx)]
+            d = objective.swap_delta(old, rows)
+            j = int(np.argmin(d))
+            if d[j] < -1e-15 and int(rows[j]) != old:
+                objective.apply_swap(old, int(rows[j]))
+                picks[int(idx)] = int(rows[j])
+                n_moves += 1
+        print(f"  {label} sweep {sweep + 1}: {n_moves} moves", flush=True)
+        if n_moves == 0:
+            break
+    auc = rf_proxy_auc(pool.selected(picks), ref_b)
+    return picks, auc
+
+
+def pick_trust(pool: Pool, ref_a, ref_b, init_picks, rounds=10, frac=0.15):
+    """Set-aware discriminator loop with a trust region: each round, fit the
+    judge on reference vs the CURRENT selected set, then move only the
+    fraction of specs with the largest log-odds gain. Avoids the argmax
+    collapse of the plain greedy loop."""
+    picks = dict(init_picks)
+    best_auc = rf_proxy_auc(pool.selected(picks), ref_b)
+    best_picks = dict(picks)
+    trace = [best_auc]
+    for r in range(rounds):
+        logw = fit_logodds(ref_a, pool.selected(picks), pool.X, seed=r)
+        gains = []
+        for idx, rows in pool.spec_rows.items():
+            j = int(np.argmax(logw[rows]))
+            gains.append((logw[rows[j]] - logw[picks[idx]], idx, int(rows[j])))
+        gains.sort(reverse=True)
+        n_move = max(1, int(frac * len(gains)))
+        moved = 0
+        for g, idx, ci in gains[:n_move]:
+            if g <= 0:
+                break
+            picks[idx] = ci
+            moved += 1
+        auc = rf_proxy_auc(pool.selected(picks), ref_b)
+        trace.append(auc)
+        if auc < best_auc:
+            best_auc, best_picks = auc, dict(picks)
+        if moved == 0:
+            break
+    print(f"  trust trace (proxy AUC vs B): "
+          + " ".join(f"{a:.4f}" for a in trace))
+    return best_picks, best_auc
+
+
 def pick_hist(pool: Pool, ref_a, ref_b, init_picks, max_sweeps=25, seed=0):
     obj = HistObjective(pool.X, ref_a, n_sel=len(init_picks))
     picks = dict(init_picks)
@@ -245,7 +359,10 @@ def main():
     ap.add_argument("--ref", default="data/human_ref_features_sir.npy")
     ap.add_argument("--rounds", type=int, default=8)
     ap.add_argument("--out-prefix", default=None)
+    ap.add_argument("--strategies",
+                    default="random,sir,greedy,hist_g,hist_s,mmd,trust")
     args = ap.parse_args()
+    strategies = set(args.strategies.split(","))
 
     pool = Pool(args.pool)
     ref = np.load(args.ref)
@@ -257,37 +374,61 @@ def main():
 
     results = {}
 
-    t0 = time.time()
-    rng = np.random.default_rng(1)
-    rnd = {idx: int(rng.choice(rows)) for idx, rows in pool.spec_rows.items()}
-    results["random"] = (rnd, rf_proxy_auc(pool.selected(rnd), ref_b))
-    print(f"random-of-K proxy AUC vs B: {results['random'][1]:.4f} "
-          f"({time.time() - t0:.0f}s)")
+    if "random" in strategies:
+        t0 = time.time()
+        rng = np.random.default_rng(1)
+        rnd = {idx: int(rng.choice(rows))
+               for idx, rows in pool.spec_rows.items()}
+        results["random"] = (rnd, rf_proxy_auc(pool.selected(rnd), ref_b))
+        print(f"random-of-K proxy AUC vs B: {results['random'][1]:.4f} "
+              f"({time.time() - t0:.0f}s)")
 
-    t0 = time.time()
     sir = pick_sir(pool, ref_a)
-    results["sir"] = (sir, rf_proxy_auc(pool.selected(sir), ref_b))
-    print(f"sir (temp 0.7) proxy AUC vs B: {results['sir'][1]:.4f} "
-          f"({time.time() - t0:.0f}s)")
+    if "sir" in strategies:
+        results["sir"] = (sir, rf_proxy_auc(pool.selected(sir), ref_b))
+        print(f"sir (temp 0.7) proxy AUC vs B: {results['sir'][1]:.4f}")
 
-    t0 = time.time()
-    print("greedy adversarial reselection:")
-    gp, ga = pick_greedy(pool, ref_a, ref_b, rounds=args.rounds)
-    results["greedy"] = (gp, ga)
-    print(f"greedy best proxy AUC vs B: {ga:.4f} ({time.time() - t0:.0f}s)")
+    if "greedy" in strategies or "hist_g" in strategies:
+        t0 = time.time()
+        print("greedy adversarial reselection:")
+        gp, ga = pick_greedy(pool, ref_a, ref_b, rounds=args.rounds)
+        if "greedy" in strategies:
+            results["greedy"] = (gp, ga)
+        print(f"greedy best proxy AUC vs B: {ga:.4f} "
+              f"({time.time() - t0:.0f}s)")
 
-    t0 = time.time()
-    print("hist exchange from greedy init:")
-    hp, ha = pick_hist(pool, ref_a, ref_b, gp)
-    results["hist_g"] = (hp, ha)
-    print(f"hist(greedy init) proxy AUC vs B: {ha:.4f} "
-          f"({time.time() - t0:.0f}s)")
+    if "hist_g" in strategies:
+        t0 = time.time()
+        print("hist exchange from greedy init:")
+        hp, ha = pick_hist(pool, ref_a, ref_b, gp)
+        results["hist_g"] = (hp, ha)
+        print(f"hist(greedy init) proxy AUC vs B: {ha:.4f} "
+              f"({time.time() - t0:.0f}s)")
 
-    t0 = time.time()
-    print("hist exchange from sir init:")
-    hp2, ha2 = pick_hist(pool, ref_a, ref_b, sir)
-    results["hist_s"] = (hp2, ha2)
-    print(f"hist(sir init) proxy AUC vs B: {ha2:.4f} ({time.time() - t0:.0f}s)")
+    if "hist_s" in strategies:
+        t0 = time.time()
+        print("hist exchange from sir init:")
+        hp2, ha2 = pick_hist(pool, ref_a, ref_b, sir)
+        results["hist_s"] = (hp2, ha2)
+        print(f"hist(sir init) proxy AUC vs B: {ha2:.4f} "
+              f"({time.time() - t0:.0f}s)")
+
+    if "mmd" in strategies:
+        t0 = time.time()
+        print("mmd exchange from sir init:")
+        mo = MMDObjective(pool.X, ref_a)
+        mp, ma = pick_exchange(pool, ref_a, ref_b, sir, mo, label="mmd")
+        results["mmd"] = (mp, ma)
+        print(f"mmd(sir init) proxy AUC vs B: {ma:.4f} "
+              f"({time.time() - t0:.0f}s)")
+
+    if "trust" in strategies:
+        t0 = time.time()
+        print("trust-region discriminator loop from sir init:")
+        tp, ta = pick_trust(pool, ref_a, ref_b, sir)
+        results["trust"] = (tp, ta)
+        print(f"trust(sir init) proxy AUC vs B: {ta:.4f} "
+              f"({time.time() - t0:.0f}s)")
 
     print("\n=== summary (proxy RF OOB AUC vs held-out reference B) ===")
     for name, (picks, auc) in sorted(results.items(), key=lambda x: x[1][1]):

@@ -2566,3 +2566,40 @@ only from evaluate.py replay, where the human class is the real eval
 sample that no stage of selection has ever seen. Seed-42 pool
 generating now; seeds 43/44 queued for overnight so a multi-seed
 confirmation is possible tomorrow.
+
+## Offline round one: the residual signal is not in the marginals (July 6, 21:05)
+
+Pool generation reproduced the recipe honestly (0.5743 at seed 42,
+within the seed's run-to-run range) and cached 31,993 candidates over
+2000 specs. First lab pass, proxy RF OOB AUC against the untouched
+reference half B:
+
+| strategy | proxy AUC |
+|---|---|
+| per-item SIR lottery (baseline) | 0.5566 |
+| histogram exchange from SIR init | 0.5612 |
+| histogram exchange from greedy init | 0.5723 |
+| random-of-K | 0.6515 |
+| greedy argmax reselection | 0.7619 |
+
+Two lessons. First, the proxy is trustworthy: replaying the lab's SIR
+picks through the honest evaluator gave 0.5699, and the histogram
+picks 0.5696, both consistent with the recipe's seed-42 range. Second,
+and more important: the exchange drove the summed histogram gap down
+by a factor of five (all 18 marginals plus the twelve most correlated
+pairs nearly indistinguishable from the reference) and the detector
+did not care. The residual 0.06 of detection does not live in feature
+marginals or pairwise structure. It lives in higher-order joint
+structure that every candidate in a spec's pool shares, which is why
+per-item argmax collapses (0.76): concentrating picks on the judge's
+favorite region manufactures exactly the kind of joint artifact a
+fresh detector finds instantly.
+
+Round two targets the joint distribution directly: a multi-bandwidth
+kernel MMD exchange (sensitive to interactions of every order), and a
+trust-region version of the adversarial reselection loop that moves
+only the best 15 percent of specs per round against a judge trained on
+the current selected set. If neither moves the proxy below the SIR
+baseline, the conclusion is support deficiency, the pool of 16
+candidates simply does not contain a human-distributed subset, and the
+remaining lever is a larger K.
