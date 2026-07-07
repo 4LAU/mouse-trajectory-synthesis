@@ -2476,3 +2476,37 @@ candidate: 0.5589 vs 0.5607. Within single-seed noise, but it is the
 best single-seed number on record, the mechanism is sound, and the
 cost is zero, so it joins the recipe pending the multi-seed
 confirmation. Seeds 43 and 44 queued for tonight.
+
+## Preference learning verdict: the judge teaches ranking, not generation (July 6, 18:25)
+
+The pair corpus came out healthy (6,000 max-contrast pairs, judge gap
+median 1.62 logits) and the DPO training itself worked exactly as
+designed: preference accuracy climbed from 0.50 to 0.87 and the margin
+between winner and loser losses grew steadily. The model genuinely
+absorbed the judge's ranking. Then the generation evals, pure model,
+seed 42, against the 0.6470 control:
+
+| checkpoint | RF OOB AUC |
+|---|---|
+| fc_v2 control | 0.6470 |
+| dpo s250 | 0.7168 |
+| dpo s500 | 0.8626 |
+| dpo s750 | 0.9327 |
+| dpo s1000 | 0.9602 |
+| dpo s1500 | 0.9782 |
+
+Monotonic collapse, and much steeper than imitation distillation ever
+was. This is Goodhart's law in weight space: pushing loser sequences
+down does not remove the loser modes, it warps the marginal token
+distributions everywhere, and the samples drift far off the human
+manifold while the internal ranking keeps improving. The judge's
+signal is real but it is only usable as a FILTER over finished
+trajectories, never as a gradient into this architecture's weights.
+
+That closes the second half of the distillation question, and with it
+the whole teach-the-model family: imitation (plain and anchored),
+three adversarial variants, and preference learning all fail on the
+same wall from four different directions. The clean statement for the
+writeup: on a masked-token event model, trajectory-level judgment
+compresses into weights in the ranking direction but not in the
+generation direction. Selection stays at inference time.
