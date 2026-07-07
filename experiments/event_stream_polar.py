@@ -116,6 +116,16 @@ _SIR_ITER = int(os.environ.get("EVENT_SIR_ITER", "1"))
 # detector weights movement_duration heavily, so letting the judge choose
 # among (duration, path) combinations adds a selection axis for free.
 _SIR_DUR_DIVERSE = os.environ.get("EVENT_SIR_DUR_DIVERSE", "0") == "1"
+# Candidate-pool cache. EVENT_POOL_SAVE writes every decodable SIR candidate
+# (features + trajectory + owning spec) to an npz before selection runs, so
+# selection strategies can be iterated offline without regenerating. A run
+# with EVENT_POOL_LOAD skips the sampler entirely and returns pool
+# trajectories; EVENT_POOL_PICKS names an int array (one global candidate row
+# per spec, -1 = none) produced by selection_lab.py. The pool is tied to the
+# exact spec list, so save and load must use the same evaluator seed.
+_POOL_SAVE = os.environ.get("EVENT_POOL_SAVE", "")
+_POOL_LOAD = os.environ.get("EVENT_POOL_LOAD", "")
+_POOL_PICKS = os.environ.get("EVENT_POOL_PICKS", "")
 assert not (_BESTOF > 1 and _SIR_K > 1), "EVENT_BESTOF and EVENT_SIR are exclusive"
 
 print(f"[event_stream_polar] ckpt={_ckpt_name} epoch={_ckpt.get('epoch')} "
@@ -173,6 +183,8 @@ def _decode(dt_z, s_cls, th_cls, sx, sy, angle) -> Trajectory | None:
 
 
 def generate_paths(specs: list) -> list:
+    if _POOL_LOAD:
+        return _pool_replay(specs)
     results: list = [None] * len(specs)
     pending = []
     for idx, (sx, sy, ex, ey) in enumerate(specs):
@@ -274,11 +286,45 @@ def generate_paths(specs: list) -> list:
                                              it["sx"], it["sy"], it["angle"])
 
     if K_sir > 1:
-        _sir_select(sir_cands, results)
+        _sir_select(sir_cands, results, specs)
     return results
 
 
-def _sir_select(sir_cands: dict, results: list) -> None:
+def _pool_replay(specs: list) -> list:
+    """Return trajectories from a saved candidate pool instead of sampling."""
+    d = np.load(_POOL_LOAD, allow_pickle=True)
+    saved = d["specs"]
+    got = np.asarray(specs, dtype=np.float64)
+    assert saved.shape == got.shape and np.allclose(saved, got, atol=1e-6), (
+        "pool specs do not match this eval run (different seed or count?)")
+    owner_idx = d["owner_idx"].astype(int)
+    trajs = d["trajs"]
+    results: list = [None] * len(specs)
+    for idx, (sx, sy, ex, ey) in enumerate(specs):
+        if math.hypot(ex - sx, ey - sy) < 1e-6:
+            results[idx] = [(sx, sy, 0.0), (ex, ey, 0.008)]
+    if _POOL_PICKS:
+        picks = np.load(_POOL_PICKS).astype(int)
+        assert len(picks) == len(specs), "picks length != spec count"
+        for idx, ci in enumerate(picks):
+            if ci < 0:
+                continue
+            assert owner_idx[ci] == idx, (
+                f"pick {ci} belongs to spec {owner_idx[ci]}, not {idx}")
+            results[idx] = [tuple(p) for p in trajs[ci]]
+    else:
+        seen: set = set()
+        for ci, idx in enumerate(owner_idx):
+            if idx not in seen:
+                seen.add(idx)
+                results[idx] = [tuple(p) for p in trajs[ci]]
+    n_ok = sum(r is not None for r in results)
+    print(f"[pool] replayed {n_ok}/{len(specs)} specs from {_POOL_LOAD}",
+          flush=True)
+    return results
+
+
+def _sir_select(sir_cands: dict, results: list, specs: list) -> None:
     """Keep one candidate per spec by a weighted draw whose weights are the
     human/synthetic density ratio from a freshly fitted discriminator."""
     from sklearn.ensemble import GradientBoostingClassifier
@@ -298,6 +344,18 @@ def _sir_select(sir_cands: dict, results: list) -> None:
     if not feats:
         return
     X_syn = np.asarray(feats)
+    if _POOL_SAVE:
+        np.savez_compressed(
+            _POOL_SAVE,
+            specs=np.asarray(specs, dtype=np.float64),
+            X=X_syn,
+            owner_idx=np.asarray([idx for idx, _ in owners], dtype=np.int32),
+            trajs=np.asarray(
+                [np.asarray(t, dtype=np.float32) for _, t in owners],
+                dtype=object),
+        )
+        print(f"[pool] saved {len(owners)} candidates "
+              f"({len(sir_cands)} specs) to {_POOL_SAVE}", flush=True)
     X_hum = np.load(_SIR_REF)
 
     def fit_logodds(X_neg):

@@ -2529,3 +2529,40 @@ detector sits at 0.51-0.54, close to chance. Every gain in the recipe
 is selection-side: sharper tempering, corrected duration prior, and
 duration choice per candidate. The gap to 0.50 is now 0.068 of AUC on
 the primary detector.
+
+## The final lever: selection as a set-level problem (July 6, 20:10)
+
+With the teach-the-model family closed, everything that ever moved the
+number lives on the selection side. Working through why SIR still
+leaves 0.068 on the table exposed a structural limit: SIR picks each
+trajectory independently, but the detector never sees trajectories one
+at a time. It trains on the whole selected population against the
+whole human sample. Independent per-spec picks cannot trade one spec's
+choice against another's to fix a marginal the entire pool overshoots,
+and the tempered lottery itself distorts the selected distribution in
+a way a freshly trained detector can spot. The eval is a distribution
+test, so selection should optimize the distribution, not the item.
+
+The mechanics make this cheap to explore. The pool of K=16 candidates
+per spec is the expensive part (one GPU run); which candidate wins is
+just an index. New plumbing: EVENT_POOL_SAVE caches every decodable
+candidate (trajectory + features + owning spec) during a normal eval
+run, and EVENT_POOL_LOAD / EVENT_POOL_PICKS replays an arbitrary
+selection through the honest evaluator in about three minutes, no GPU
+sampling. Selection strategies iterate offline in seconds.
+
+selection_lab.py implements three: the current per-item lottery as a
+calibration baseline; iterated adversarial reselection (fit a
+discriminator between the reference and the current selected set,
+accumulate log-odds, re-pick, repeat, which gives selection the
+set-level feedback loop it lacked); and a histogram-matching exchange
+that directly minimizes the L1 gap between selected-set and reference
+histograms over all 18 feature marginals plus the twelve most
+correlated feature pairs, the exact structures an axis-aligned forest
+splits on. Honesty protocol: the 4000-row disjoint reference is split
+in half, all fitting uses half A, and a proxy RF OOB AUC against the
+untouched half B is reported for every strategy. Final numbers come
+only from evaluate.py replay, where the human class is the real eval
+sample that no stage of selection has ever seen. Seed-42 pool
+generating now; seeds 43/44 queued for overnight so a multi-seed
+confirmation is possible tomorrow.
