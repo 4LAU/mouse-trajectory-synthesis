@@ -179,15 +179,23 @@ mouse-trajectory-synthesis/
 
 All trajectory data comes from public mouse dynamics datasets. Raw data is **not redistributed**; it is downloaded from original sources during training data preparation.
 
-| Dataset | Source | Use |
-|---|---|---|
-| Balabit Mouse Dynamics Challenge | [github.com/balabit/Mouse-Dynamics-Challenge](https://github.com/balabit/Mouse-Dynamics-Challenge) | Primary corpus |
-| SapiMouse | [Antal & Nemes, 2016](https://www.ms.sapientia.ro/~manyi/sapimouse/sapimouse.html) | Additional trajectory data |
-| DFL | [Antal, 2019](https://www.ms.sapientia.ro/~manyi/DFL.html) | Additional trajectory data |
-| Chaoshen | [Shen et al., 2013](https://figshare.com/articles/dataset/Mouse_Behavior_Data_for_Continuous_Authentication/5619328) | Additional trajectory data |
-| Bogazici | [Yildirim et al., 2021](https://data.mendeley.com/datasets/w6cxr8yc7p/2) | Additional trajectory data |
+| Dataset | Source | License | Use |
+|---|---|---|---|
+| Balabit Mouse Dynamics Challenge | [github.com/balabit/Mouse-Dynamics-Challenge](https://github.com/balabit/Mouse-Dynamics-Challenge) | None declared; citation requested | Primary corpus |
+| SapiMouse | [ms.sapientia.ro/~manyi/sapimouse](https://www.ms.sapientia.ro/~manyi/sapimouse/sapimouse.html) | None declared; citation requested | Additional trajectory data |
+| DFL | [ms.sapientia.ro/~manyi/DFL](https://www.ms.sapientia.ro/~manyi/DFL.html) | None declared; citation requested | Additional trajectory data |
+| Chaoshen | [figshare](https://figshare.com/articles/dataset/Mouse_Behavior_Data_for_Continuous_Authentication/5619328) | CC BY 4.0 | Additional trajectory data |
+| Bogazici | [Mendeley Data](https://data.mendeley.com/datasets/w6cxr8yc7p/2) | CC BY 4.0 | Additional trajectory data |
 
 Model weights are trained on these publicly available datasets (4.16M total trajectories). Raw trajectory data is not included in this repository.
+
+Dataset credits, as their authors request them:
+
+- Fülöp, Á., Kovács, L., Kurics, T., Windhager-Pokol, E. (2016). Balabit Mouse Dynamics Challenge data set.
+- Antal, M., Fejér, N., Buza, K. (2021). SapiMouse: Mouse dynamics-based user authentication using deep feature learning. IEEE SACI 2021.
+- Antal, M., Dénes-Fazakas, L. (2019). User verification based on mouse dynamics: a comparison of public data sets. IEEE SACI 2019.
+- Shen, C. (2017). Mouse behavior data for continuous authentication. figshare, CC BY 4.0.
+- Yıldırım, M., Kılıç, A. A., Anarım, E. (2021). Boğaziçi University mouse dynamics dataset. Mendeley Data, v2, CC BY 4.0.
 
 ## Related Work
 
