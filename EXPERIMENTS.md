@@ -2729,3 +2729,39 @@ reference drawn from the pool with the eval sample's indices excluded.
 If the loop closes the raw gap without giving back the 18-feature win,
 the recipe generalizes: any detector family you can featurize, you
 can select against.
+
+## Widening the judge closes the raw-signal gap (July 6, 21:55)
+
+trust33 verdict, seed 42, honest replay plus the full external suite
+on the selected set. The judge saw 33 features (18 hand-crafted plus
+the 15 raw-signal features the external round exposed); every
+detector below was trained fresh on sets the judge never touched:
+
+| detector | 18-dim judge | 33-dim judge |
+|---|---|---|
+| RF OOB (the honest eval) | 0.4892 | 0.5095 |
+| XGBoost | 0.5112 | 0.5100 |
+| ExtraTrees | 0.4850 | 0.5098 |
+| HistGBM | 0.5071 | 0.5174 |
+| MLP | 0.5269 | 0.5497 |
+| LogReg | 0.5361 | 0.5421 |
+| RF on raw-signal features | 0.5832 | 0.4835 |
+
+The raw-signal detector drops from 0.583 to 0.484 and nothing else
+gives the win back. Worst-case deviation from coin-flip across all
+seven readouts halves, from 0.083 to 0.050. The recipe generalizes
+the way we hoped: featurize any detector family, hand its features
+to the judge, rerun the loop offline in about a minute.
+
+Seed 43 also confirmed tonight for the 18-dim configs on its own
+fresh pool: honest 0.4866 and 0.4922. Two seeds, both at chance.
+
+The residual worth chasing is the smooth-boundary families, MLP and
+logistic regression, at 0.54 to 0.55. Trees carve axis-aligned boxes,
+so a tree judge can match every box density and still leave a tilted
+linear margin open. Next iteration queued: an ensemble judge (RF plus
+standardized logistic and MLP log-odds averaged) on the same 33 dims.
+One honesty note for the record: we compare configs using the honest
+evaluator and disjoint-reference proxies, and treat the external
+suite as a reported diagnostic, so picking among two or three configs
+does not meaningfully overfit its numbers.

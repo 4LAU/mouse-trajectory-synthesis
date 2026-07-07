@@ -40,7 +40,11 @@ import time
 
 import numpy as np
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
+from sklearn.neural_network import MLPClassifier
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 
 def rf_proxy_auc(X_sel: np.ndarray, X_ref: np.ndarray,
@@ -61,18 +65,32 @@ def rf_proxy_auc(X_sel: np.ndarray, X_ref: np.ndarray,
 
 def fit_logodds(X_pos, X_neg, X_score, trees=200, seed=0, judge="gbm"):
     """Discriminator log-odds; gbm matches the in-recipe SIR judge, rf
-    matches the primary detector family."""
+    matches the primary detector family, ens averages rf with the linear
+    and MLP families the external suite showed still see a residual."""
     X = np.vstack([X_pos, X_neg])
     y = np.concatenate([np.ones(len(X_pos)), np.zeros(len(X_neg))])
     if judge == "rf":
-        clf = RandomForestClassifier(n_estimators=trees, n_jobs=-1,
-                                     random_state=seed)
+        clfs = [RandomForestClassifier(n_estimators=trees, n_jobs=-1,
+                                       random_state=seed)]
+    elif judge == "ens":
+        clfs = [
+            RandomForestClassifier(n_estimators=trees, n_jobs=-1,
+                                   random_state=seed),
+            make_pipeline(StandardScaler(),
+                          LogisticRegression(max_iter=2000)),
+            make_pipeline(StandardScaler(),
+                          MLPClassifier(hidden_layer_sizes=(64, 32),
+                                        max_iter=300, random_state=seed)),
+        ]
     else:
-        clf = GradientBoostingClassifier(n_estimators=trees, max_depth=3,
-                                         subsample=0.8, random_state=seed)
-    clf.fit(X, y)
-    p = np.clip(clf.predict_proba(X_score)[:, 1], 1e-4, 1 - 1e-4)
-    return np.log(p) - np.log(1.0 - p)
+        clfs = [GradientBoostingClassifier(n_estimators=trees, max_depth=3,
+                                           subsample=0.8, random_state=seed)]
+    lo = np.zeros(len(X_score))
+    for clf in clfs:
+        clf.fit(X, y)
+        p = np.clip(clf.predict_proba(X_score)[:, 1], 1e-4, 1 - 1e-4)
+        lo += np.log(p) - np.log(1.0 - p)
+    return lo / len(clfs)
 
 
 class Pool:

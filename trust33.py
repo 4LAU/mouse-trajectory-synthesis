@@ -25,11 +25,13 @@ import numpy as np
 
 from external_detectors import _manual_mini_features, raw_traj_to_channels
 from features import extract_features, resample_trajectory
-from selection_lab import Pool, pick_trust, rf_proxy_auc
+from selection_lab import Pool, pick_sir, pick_trust, rf_proxy_auc
 
 CONFIGS = [
     ("f20d85_r30_rf", dict(rounds=30, frac=0.20, judge="rf", frac_decay=0.85)),
     ("f05_r30_rf", dict(rounds=30, frac=0.05, judge="rf")),
+    ("f20d85_r30_ens", dict(rounds=30, frac=0.20, judge="ens",
+                            frac_decay=0.85)),
 ]
 
 
@@ -115,16 +117,28 @@ def main():
     pool = Pool33(args.pool)
     prefix = args.pool.replace(".npz", "")
     init_path = args.init_picks or f"{prefix}_picks_sir.npy"
+    if not Path(init_path).exists():
+        # Reproduce the production per-item SIR init: 18-dim GBM judge,
+        # tempered lottery, same defaults selection_lab's main uses.
+        X33 = pool.X
+        pool.X = X33[:, :18]
+        sir_picks = pick_sir(pool, ref_a[:, :18])
+        pool.X = X33
+        np.save(init_path, pool.picks_to_full(sir_picks))
+        print(f"built SIR init -> {init_path}")
     full = np.load(init_path).astype(int)
     init = {int(i): int(ci) for i, ci in enumerate(full) if ci >= 0}
     print(f"init {init_path}: proxy33 vs B = "
           f"{rf_proxy_auc(pool.selected(init), ref_b):.4f}")
 
     for name, kw in CONFIGS:
+        out = f"{prefix}_picks_trust33_{name}.npy"
+        if Path(out).exists():
+            print(f"SKIP {out}")
+            continue
         t0 = time.time()
         picks, auc = pick_trust(pool, ref_a, ref_b, init,
                                 label=f"trust33_{name}", **kw)
-        out = f"{prefix}_picks_trust33_{name}.npy"
         np.save(out, pool.picks_to_full(picks))
         print(f"trust33_{name}: proxy33 {auc:.4f} "
               f"({time.time() - t0:.0f}s) -> {out}", flush=True)
