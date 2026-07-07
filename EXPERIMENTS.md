@@ -2691,3 +2691,41 @@ generating tonight, the loop reruns per pool in seconds), Raw-NN
 (never included in replay probes, only the protected run will tell),
 and proxy-to-honest gap direction (it has been +0.01 to +0.02 so
 far, and held here too: proxy 0.4688 replayed to 0.4892).
+
+## Outside detectors: the win generalizes across features, not yet across signals (July 6, 21:30)
+
+L asked for validation beyond our own RF, and public detection services
+will not take offline submissions, so we brought stronger free detectors
+to the data instead (external_detectors.py). Six independent families
+against the seed-42 trust-selected set, 2000 per class, 5-fold CV:
+
+| detector | input | AUC |
+|---|---|---|
+| XGBoost | 18 features | 0.5112 |
+| ExtraTrees | 18 features | 0.4850 |
+| HistGBM | 18 features | 0.5071 |
+| MLP | 18 features | 0.5269 |
+| LogReg | 18 features | 0.5361 |
+| RF on raw-signal features | speed/vx/vy channels | 0.5832 |
+
+Every family that looks at the world through the 18 hand-crafted
+features sits at chance, including boosting and linear models with
+very different inductive biases than the RF we tuned against. So the
+selection win is not a single-detector artifact.
+
+The raw-signal detector is the real finding: autocorrelations,
+spectral centroid, and acceleration zero-crossing rate computed
+straight off the resampled speed and velocity channels score 0.583.
+The judge never saw those quantities, so selection had no reason to
+match them. (pycatch22 has no Windows wheel and needs MSVC to build;
+this is a 15-feature manual stand-in, so the canonical 66-feature
+version would likely score a bit higher.)
+
+The fix writes itself, and it is the whole point of doing selection
+at inference time instead of training time: widen the judge. trust33.py
+reruns the identical trust loop with a 33-dim judge (18 hand-crafted
+plus the 15 raw-signal features), against a rebuilt 4000-row human
+reference drawn from the pool with the eval sample's indices excluded.
+If the loop closes the raw gap without giving back the 18-feature win,
+the recipe generalizes: any detector family you can featurize, you
+can select against.
