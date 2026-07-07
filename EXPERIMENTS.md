@@ -2730,7 +2730,7 @@ If the loop closes the raw gap without giving back the 18-feature win,
 the recipe generalizes: any detector family you can featurize, you
 can select against.
 
-## Widening the judge closes the raw-signal gap (July 6, 21:55)
+## Widening the judge closes the raw-signal gap (July 6, 21:30)
 
 trust33 verdict, seed 42, honest replay plus the full external suite
 on the selected set. The judge saw 33 features (18 hand-crafted plus
