@@ -2603,3 +2603,31 @@ the current selected set. If neither moves the proxy below the SIR
 baseline, the conclusion is support deficiency, the pool of 16
 candidates simply does not contain a human-distributed subset, and the
 remaining lever is a larger K.
+
+## Round two: the trust-region loop is the first set-level win (July 6, 21:35)
+
+Kernel MMD exchange, the strongest pure distribution-matching
+objective available, landed at 0.5720 proxy, worse than the SIR
+baseline it started from. Combined with the histogram tie this closes
+the matching family: with K=16 candidates per spec, the selected set
+cannot be pushed meaningfully closer to the reference distribution
+than the tempered lottery already gets it, because the residual
+mismatch is shared across every candidate in the pool.
+
+The adversarial direction is different. The trust-region loop (fit a
+judge between the reference and the CURRENT selected set, move only
+the 15 percent of specs with the largest log-odds gain, repeat) walked
+the proxy from 0.5649 down to 0.5387 in ten rounds. The honest replay
+confirms it: 0.5554 RF OOB at seed 42, against 0.5699 for the per-item
+lottery replayed on the identical pool. About 0.015 of real
+improvement from changing nothing but WHICH candidate wins each spec.
+The mechanism matches the theory: the per-item lottery cannot see the
+population-level artifacts its own picks create, while a judge trained
+against the current selected set can, and small steps stop the
+self-defeating overcorrection that killed plain argmax reselection.
+
+The trace still oscillates round to round, which reads as step-size
+overshoot: 300 specs all jumping toward the same judge's preference
+per round is too coarse. Tuning sweep queued: smaller and decaying
+step fractions, more rounds, and an RF judge to match the detector
+family the eval actually uses.

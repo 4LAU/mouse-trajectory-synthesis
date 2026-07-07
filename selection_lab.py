@@ -59,12 +59,17 @@ def rf_proxy_auc(X_sel: np.ndarray, X_ref: np.ndarray,
     return float(np.mean(aucs))
 
 
-def fit_logodds(X_pos, X_neg, X_score, trees=200, seed=0):
-    """Same discriminator family as the in-recipe SIR judge."""
+def fit_logodds(X_pos, X_neg, X_score, trees=200, seed=0, judge="gbm"):
+    """Discriminator log-odds; gbm matches the in-recipe SIR judge, rf
+    matches the primary detector family."""
     X = np.vstack([X_pos, X_neg])
     y = np.concatenate([np.ones(len(X_pos)), np.zeros(len(X_neg))])
-    clf = GradientBoostingClassifier(n_estimators=trees, max_depth=3,
-                                     subsample=0.8, random_state=seed)
+    if judge == "rf":
+        clf = RandomForestClassifier(n_estimators=trees, n_jobs=-1,
+                                     random_state=seed)
+    else:
+        clf = GradientBoostingClassifier(n_estimators=trees, max_depth=3,
+                                         subsample=0.8, random_state=seed)
     clf.fit(X, y)
     p = np.clip(clf.predict_proba(X_score)[:, 1], 1e-4, 1 - 1e-4)
     return np.log(p) - np.log(1.0 - p)
@@ -293,7 +298,8 @@ def pick_exchange(pool: Pool, ref_a, ref_b, init_picks, objective,
     return picks, auc
 
 
-def pick_trust(pool: Pool, ref_a, ref_b, init_picks, rounds=10, frac=0.15):
+def pick_trust(pool: Pool, ref_a, ref_b, init_picks, rounds=10, frac=0.15,
+               judge="gbm", frac_decay=1.0, label="trust"):
     """Set-aware discriminator loop with a trust region: each round, fit the
     judge on reference vs the CURRENT selected set, then move only the
     fraction of specs with the largest log-odds gain. Avoids the argmax
@@ -302,14 +308,16 @@ def pick_trust(pool: Pool, ref_a, ref_b, init_picks, rounds=10, frac=0.15):
     best_auc = rf_proxy_auc(pool.selected(picks), ref_b)
     best_picks = dict(picks)
     trace = [best_auc]
+    f = frac
     for r in range(rounds):
-        logw = fit_logodds(ref_a, pool.selected(picks), pool.X, seed=r)
+        logw = fit_logodds(ref_a, pool.selected(picks), pool.X, seed=r,
+                           judge=judge)
         gains = []
         for idx, rows in pool.spec_rows.items():
             j = int(np.argmax(logw[rows]))
             gains.append((logw[rows[j]] - logw[picks[idx]], idx, int(rows[j])))
         gains.sort(reverse=True)
-        n_move = max(1, int(frac * len(gains)))
+        n_move = max(1, int(f * len(gains)))
         moved = 0
         for g, idx, ci in gains[:n_move]:
             if g <= 0:
@@ -320,9 +328,10 @@ def pick_trust(pool: Pool, ref_a, ref_b, init_picks, rounds=10, frac=0.15):
         trace.append(auc)
         if auc < best_auc:
             best_auc, best_picks = auc, dict(picks)
+        f *= frac_decay
         if moved == 0:
             break
-    print(f"  trust trace (proxy AUC vs B): "
+    print(f"  {label} trace (proxy AUC vs B): "
           + " ".join(f"{a:.4f}" for a in trace))
     return best_picks, best_auc
 
