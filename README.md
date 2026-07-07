@@ -1,3 +1,4 @@
+[![verify](https://github.com/4LAU/mouse-trajectory-synthesis/actions/workflows/verify.yml/badge.svg)](https://github.com/4LAU/mouse-trajectory-synthesis/actions/workflows/verify.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://python.org)
 
@@ -103,7 +104,7 @@ EVENT_POOL_PICKS=pool_s42_k16_picks_trust33_f20d85_r30_rf.npy \
 python evaluate.py --experiment experiments.event_stream_polar --seed 42 --no-raw-nn
 ```
 
-Repeat with `s43`/`--seed 43` and `s44`/`--seed 44` for the other two seeds. The human class in this replay is the held-out evaluation sample no part of selection ever saw; the pool files contain only model-generated trajectories, so nothing here can leak the answer. Drop `--no-raw-nn` to also run the raw-sequence neural detector (slower; needs the training data split).
+Repeat with `s43`/`--seed 43` and `s44`/`--seed 44` for the other two seeds, or run `python verify_headline.py` to do all three and check them against the published values in one command. The same check runs in CI on every push (the verify badge at the top of this page). The human class in this replay is the held-out evaluation sample no part of selection ever saw; the pool files contain only model-generated trajectories, so nothing here can leak the answer. Drop `--no-raw-nn` to also run the raw-sequence neural detector (slower; needs the training data split).
 
 **Rebuild everything from scratch.** All of the current-generation numbers come from one checkpoint, `event_polar_4m_fc_v2.pt` (downloaded to `training/` by `setup_data.py`), run through `experiments/event_stream_polar.py` with different environment variables controlling the sampler and the selection layer. The exact locked recipe (and every knob that was tried and rejected along the way) is logged in [EXPERIMENTS.md](EXPERIMENTS.md); the commands below are the short version.
 

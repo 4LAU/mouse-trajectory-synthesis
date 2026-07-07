@@ -1,0 +1,42 @@
+name: verify
+
+# Reproduce the headline result from the published release assets on every
+# push: download the cached candidate pools and winning picks, replay them
+# through the evaluator on CPU, and check each seed's RF OOB AUC against the
+# published value. No GPU, no model weights, about five minutes.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify-headline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies (CPU torch, pinned versions)
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy==2.4.4 scipy==1.17.1 scikit-learn==1.8.0
+          pip install -e . --no-deps
+
+      - name: Download reproduce bundle from the release
+        run: |
+          BASE=https://github.com/4LAU/mouse-trajectory-synthesis/releases/latest/download
+          for s in 42 43 44; do
+            curl -sSLO $BASE/pool_s${s}_k16.npz
+            curl -sSLO $BASE/pool_s${s}_k16_picks_trust33_f20d85_r30_rf.npy
+          done
+          mkdir -p data
+          curl -sSL $BASE/human_eval_features.npy -o data/human_eval_features.npy
+          curl -sSL $BASE/human_distances.npy -o data/human_distances.npy
+
+      - name: Replay all three seeds and check against published values
+        run: python verify_headline.py

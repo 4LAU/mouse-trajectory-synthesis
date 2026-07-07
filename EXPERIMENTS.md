@@ -730,7 +730,7 @@ tail of the previous chunk. Compounding error drops from 200 decision points (pe
 Ref: SoundStorm (Borsos et al., 2023), MaskGIT (Chang et al., CVPR 2022)
 
 Uses our existing VQ-VAE codebook (validated: 30 px/s error, 1024/1024 entries used) with a
-new generation paradigm. Instead of left-to-right autoregressive (which caused mode collapse, 420/1024 tokens used), start with all tokens masked and iteratively unmask in confidence order.
+new generation recipe. Instead of left-to-right autoregressive (which caused mode collapse, 420/1024 tokens used), start with all tokens masked and iteratively unmask in confidence order.
 A bidirectional Transformer sees the full sequence context including both endpoints.
 
 - **Why novel vs. what we tried**: Our VQ-VAE + autoregressive Transformer generated
@@ -840,7 +840,7 @@ a learned linear dynamical system, natural fit for trajectory dynamics.
 
 For a generative model below AUC 0.75, recommended order:
 1. ~~Action Chunking (#2), simplest, reuses DDPM backbone, directly solves exposure bias~~ **TRIED, FAILED (AUC 0.957)**
-2. ~~SoundStorm on VQ-VAE (#3), reuses existing codebook, novel generation paradigm~~ **TRIED, FAILED (AUC 0.996)**
+2. ~~SoundStorm on VQ-VAE (#3), reuses existing codebook, novel generation recipe~~ **TRIED, FAILED (AUC 0.996)**
 3. CANDI hybrid diffusion (#1), most theoretically sound, addresses stalls without VQ-VAE quantization bottleneck
 4. Decoupled Shape + Speed (#4), partially validated by v147 (DDPM spatial + real timing = 0.82)
 5. MoGlow (#6), exact likelihood, no mode collapse, but still autoregressive
@@ -941,7 +941,7 @@ acceleration→jerk relationships.
 | **CARP** (Desai et al.) | Dec 2024 | Autoregression across SCALE not TIME, generate coarse shape, then refine. Matches diffusion quality at AR speed. |
 | **JointDiff** | ICLR 2026 | Joint continuous+discrete diffusion for trajectories with discrete events. |
 | **IMPACT** | CVPR 2025 | Iterative masked prediction for action chunking. Extends MaskGIT to robotics. |
-| **MDG** | 2025 | Masked discrete generation for molecular conformations. Same paradigm, different domain. |
+| **MDG** | 2025 | Masked discrete generation for molecular conformations. Same idea, different domain. |
 | **CosyVoice 2** | 2025 | Finite scalar quantization + masked generation for speech. Shows FSQ can replace VQ-VAE. |
 | **DiffInk** | 2025 | Diffusion for handwriting with variable-length sequences. Similar kinematic requirements. |
 | **PALLE** | 2025 | Predictive autoregressive latent language for motion. Multi-scale latent codes. |
