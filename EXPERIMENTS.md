@@ -2864,3 +2864,149 @@ picture a 0.504 detector score predicts.
 
 Also this session: docs committed at the 0.504 headline (eeb44d9), PLAN.md
 status brought up to date, three dead docs removed in the same commit.
+
+## Stretch day: attacking our own residuals (July 7)
+
+With the headline confirmed and committed, the last day goes to the two
+things the write-up discloses rather than closes: the smooth-boundary
+detectors (MLP and logistic regression near 0.54 on the summary features)
+and whatever lives outside the feature pipeline's field of view. The
+adversarial-training axis stays closed; it was moved up to July 6, ran as
+preference learning, and failed with the rest of the teach-the-model
+family. Everything below runs CPU-only on the cached candidate pools, so
+the confirmed result is never at risk.
+
+## A stronger single smooth judge does not transfer (July 7)
+
+The ensemble-judge probe failed by dilution, and the journal's own note
+said the right next tool would be a stronger single judge. trust_stretch.py
+does that as a short polish: start from the exact picks behind the 0.504
+result, run a few small decaying trust-region rounds where the judge is a
+single MLP, a single logistic model, or strict alternation of the RF with
+an MLP, and track a three-detector proxy suite (RF OOB as the guard, MLP
+and logistic 5-fold) against reference half B every round, keeping the
+round with the smallest worst-case deviation from chance.
+
+At proxy level it looks like a win. The logistic polish walks the linear
+proxy from 0.535 to 0.508 while the RF guard stays at 0.497. The honest
+replay takes the win back: the primary rises to 0.5215 (from 0.5095), the
+trees get worse across the board, honest logistic sits at 0.5404, and the
+MLP improves only to 0.534. Selecting the best round of a noisy proxy
+buys mostly the winner's curse, and the specs the linear judge moves are
+specs the trees wanted somewhere else.
+
+Before accepting that the residual is real, one control: maybe 0.54 is
+just what two different draws of humans score against each other on a
+smooth boundary. No. Disjoint human samples are mutually indistinguishable
+under all three families (RF 0.500, MLP 0.476 to 0.509, logistic 0.478 to
+0.516 across three pairings). The smooth-boundary residual is a genuine
+property of the synthetic set, and it is shared widely enough across each
+spec's candidates that reselection cannot dodge it.
+
+## Doubling the pool halves the perceptron residual (July 7)
+
+The July 6 K=32 pool for seed 42, generated as a support-deficiency hedge
+and never used, is the direct test of that sharing claim. The identical
+33-dim recipe B loop on 63,984 candidates converges to proxy 0.4756, and
+the honest replay plus the external suite give, next to the K=16 numbers:
+
+| detector | K=16 | K=32 | K=32 + rf/mlp polish |
+|---|---|---|---|
+| RF OOB (honest primary) | 0.5095 | 0.4973 | 0.4911 |
+| RF 5-fold | 0.5030 | 0.4846 | 0.4972 |
+| GBM 5-fold | 0.5171 | 0.5213 | 0.5131 |
+| Raw-NN | 0.5010 | 0.5045 | 0.5074 |
+| XGBoost | 0.5100 | 0.5136 | 0.5103 |
+| ExtraTrees | 0.5098 | 0.4871 | 0.4910 |
+| HistGBM | 0.5174 | 0.5137 | 0.5042 |
+| MLP | 0.5497 | 0.5205 | 0.5306 |
+| LogReg | 0.5421 | 0.5463 | 0.5394 |
+| RF on raw-signal | 0.4835 | 0.4833 | 0.4909 |
+
+Two conclusions. The perceptron residual is support-limited: giving the
+loop 32 candidates per movement instead of 16 cuts it from 0.550 to
+0.521 with the primary at 0.4973 and no other detector paying. The linear
+residual is not: 0.546 at K=32, 0.539 after the best polish, never
+honestly below about 0.535 under any judge tried at either pool size.
+Whatever the logistic detector reads is a direction the generator imposes
+on essentially every candidate it emits. Closing it means changing the
+model, and that family of attempts is already closed.
+
+The K=32 row with the alternating polish is the tightest selected set of
+the project: primary 0.4911, worst detector 0.539. It stays a single-seed
+observation, because K=32 pools exist only for seed 42 and generating two
+more is a GPU session. The three-seed headline stays 0.504 at K=16; the
+K=32 numbers are recorded here as what one seed says the recipe does with
+more room to choose.
+
+## The event clock, the one channel where synthetic is trivially separable (July 7)
+
+Every detector in this project, internal and external, reads trajectories
+after a 125 Hz resample. A diagnostic on the raw event streams shows what
+that hides: 95.3 percent of held-out human deltas are exactly 8 ms, the
+USB polling clock, with a dropped-frame tail at 16 and 24 ms, while the
+model emits deltas spread over 1 to 11 ms. A random forest on nothing but
+the per-trajectory dt histogram separates the two at 0.9999. None of the
+kinematics matter; the clock alone gives the synthetic away at the raw
+event level.
+
+The obvious fix is to re-emit each generated path on the human clock, and
+it fails in an instructive sequence. Drawing deltas from the pooled human
+dt distribution leaves the detector at 0.98, because the clock is
+session-specific: a real trajectory carries one device's signature, and a
+mixture of clock values inside a single trajectory is itself a tell.
+Transplanting one donor trajectory's whole dt sequence fixes the mixing
+but moves the timestamps off the 8 ms grid, and the downstream 125 Hz
+resample then reads a smoothed path: angular velocity drops 15 percent,
+jerk shifts, and the honest 18-feature RF jumps from 0.504 to 0.577. A
+sanity check confirms the pipeline itself is exact: re-emitting on a
+strict 8 ms grid, which reproduces the resample's own sample points,
+changes all 18 feature medians by 0.00 percent and leaves the RF at
+0.5040 to the fourth digit. And the refined version, strict clock plus
+donor drop patterns plus duration snapped to the grid, is the worst of
+all (dt detector 1.0000, RF 0.766), because real clocks are not exactly
+0.008000 seconds and the jerk-scale features are sensitive to
+sub-millisecond sampling phase: the original synthetic events sit slightly
+off the resample grid and get read through a drifting interpolation phase,
+exactly as real 7.998 ms hardware clocks do, and emitting on the
+mathematically exact grid removes that drift and sharpens the feature
+distributions away from human.
+
+So the finding stands as a scope statement rather than a fix. The
+kinematic claim is defined at the 125 Hz resample level, where every
+detector here operates and where the 0.504 result holds. The raw event
+clock is a separate channel, trivially separating today, and it cannot be
+patched after generation: any re-timing disturbs the resample phase that
+the sensitive features live on. Making the model emit on a hardware clock
+lattice natively is generation-time work (a constrained dt head at
+sampling time) and goes on the open-directions list. Worth noting for
+deployment: an integration that reports positions on the host's own
+polling clock sidesteps the channel entirely, because the timestamps then
+come from real hardware.
+
+## Two heavier raw-sequence adversaries stay at chance (July 7)
+
+Inside the resample scope, the strongest attack surface left was depth.
+The eval suite's Raw-NN is a three-layer CNN trained for 20 epochs, and
+0.501 from a small net is not the same statement as 0.50 from a strong
+one. detector_raw_strong.py trains two bigger adversaries on the identical
+inputs and honesty protocol (125 Hz resampled dx, dy, mask channels,
+held-out human split, pooled out-of-fold predictions from 3-fold CV, no
+tuning against the result): a five-block dilated CNN whose receptive field
+spans the whole sequence, 40 epochs with cosine learning rate, and a
+two-layer bidirectional GRU, 30 epochs.
+
+Against the headline selected set (seed 42, 33-dim judge picks), the
+dilated CNN reads 0.5094 and the GRU 0.5086. Both sit within a point of
+the small Raw-NN's 0.5010 on the same picks. The raw kinematic channel
+holds against sequence models with global context and an order of
+magnitude more training, which is the last box the validity section
+wanted ticked.
+
+The day's ledger, all seed-42 honest numbers, all CPU, headline untouched:
+stronger smooth judges do not transfer (residual is real, generator-level,
+linear part stuck near 0.54); K=32 halves the perceptron residual and puts
+the primary at 0.4973 on its single available seed; the raw event clock is
+a disclosed out-of-scope channel with a principled reason post-hoc fixes
+cannot exist; and the resampled raw channel survives two much stronger
+adversaries. The 0.504 three-seed headline stands as committed.

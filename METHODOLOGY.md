@@ -1368,6 +1368,46 @@ worst-case deviation across the whole panel roughly in half, with no loss on the
 original features. Two detectors, the perceptron and logistic regression, still
 sit near 0.54, so the flattening is close to complete but not total.
 
+Three follow-up probes on the last day tested how hard that residual is. A
+stronger single smooth judge (a lone MLP or logistic model run as a short
+polish on the confirmed picks) closed the residual on a tuning proxy but gave
+it back on the honest replay, the winner's curse of selecting the best round
+of a noisy metric; a control confirmed the residual is real, since two
+disjoint human samples are mutually indistinguishable under the same smooth
+detectors. Doubling the candidate pool to 32 movements per spec, on the one
+seed with a K=32 pool, cut the perceptron detector from 0.550 to 0.521 with
+the primary at 0.497 and no other detector paying, which locates the
+perceptron residual as support deficiency (too few candidates to choose from),
+while the logistic reading held near 0.54 at both pool sizes and reads as a
+generator-level direction selection cannot remove. Finally, two heavier
+held-out sequence adversaries on the raw resampled channels, a dilated CNN
+spanning the full movement and a bidirectional GRU, both stayed at chance
+(0.509) against the headline picks, closing the depth question the small
+Raw-NN left open. All three probes were CPU-only replays on cached pools and
+did not touch the three-seed headline.
+
+The stretch day at the end of the project pushed on both remaining fronts. On
+the raw side, two adversaries far heavier than the suite's small CNN, a
+five-block dilated CNN whose receptive field spans the entire sequence and a
+two-layer bidirectional GRU, trained under the same held-out protocol, read
+0.509 each against the reported selection. On the smooth side, three results.
+Stronger single smooth judges (an MLP alone, a logistic model alone, and strict
+alternation with the forest) win at proxy level and give the win back on the
+honest replay, so the residual is not a tuning artifact we failed to chase.
+A control shows disjoint human samples are mutually indistinguishable under
+the same smooth detectors (0.48 to 0.52), so the residual is a genuine
+property of the synthetic set, not human sampling noise. And doubling the
+candidate pool to K=32 on the one seed that had such a pool cut the perceptron
+to 0.521 with the primary at 0.497, while the logistic reading stayed near
+0.54 at both pool sizes and under every judge. The linear direction is
+something the generator imposes on essentially every candidate it emits;
+closing it is model work, not selection work.
+
+One channel sits outside this entire panel by construction. All detectors
+here read trajectories after the 125 Hz resample. The raw event stream is
+separable at a glance: 95.3 percent of held-out human timestamp deltas are
+exactly 8 
+
 Reproduction and the held-out discipline are covered above: independent seeds, a
 reference split whose second half the fitting never touches, and a final number
 replayed against an evaluation sample no part of selection has seen, with a
