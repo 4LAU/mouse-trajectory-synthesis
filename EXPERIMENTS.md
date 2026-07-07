@@ -2510,3 +2510,22 @@ same wall from four different directions. The clean statement for the
 writeup: on a masked-token event model, trajectory-level judgment
 compresses into weights in the ranking direction but not in the
 generation direction. Selection stays at inference time.
+
+## New honest best: 0.568 +/- 0.010 at three seeds (July 6, 19:40)
+
+The full recipe, fc_v2 + gumbel ct10 + snap 2.5 + dur_std 1.0 +
+empirical duration prior + SIR K=16 at temp 0.7 + per-candidate
+duration diversity, across seeds 42/43/44:
+
+| seed | RF OOB | RF 5-fold | GBM 5-fold | Raw-NN |
+|---|---|---|---|---|
+| 42 | 0.5589 | 0.5720 | 0.5426 | 0.5091 |
+| 43 | 0.5781 | 0.5753 | 0.5720 | 0.5395 |
+| 44 | 0.5681 | 0.5885 | 0.5816 | 0.5320 |
+
+RF OOB 0.568 +/- 0.010, a 0.028 improvement over the previous honest
+best (0.596 +/- 0.005, the pre-sweep ct10/K8 recipe). The raw-NN
+detector sits at 0.51-0.54, close to chance. Every gain in the recipe
+is selection-side: sharper tempering, corrected duration prior, and
+duration choice per candidate. The gap to 0.50 is now 0.068 of AUC on
+the primary detector.
