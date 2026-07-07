@@ -2844,3 +2844,23 @@ the honest resting place of a generator a detector genuinely cannot separate,
 where a sub-0.50 figure invites a misread that the metric was overshot. The
 18-dim result stands recorded here as the alternative; both land at chance,
 and neither is cherry-picked over the other on the primary axis.
+
+## Figures moved to the event-stream era (July 7, morning)
+
+The two remaining README figures still showed the ZIMT and corpus-rotate
+models from May. Both were regenerated without touching the GPU: the seed-42
+candidate pool caches the raw trajectory behind every candidate, and the
+trust-loop picks file names the winner per spec, so the exact selected set
+behind the 0.504 result can be reconstructed offline.
+
+trajectory_overlay.png now shows four held-out human movements above four
+generated ones at matched distances (73 to 828 px). To keep the examples
+typical rather than flattering or damning, each panel takes the path of
+median directness within a 12 percent distance band, for both classes.
+feature_distributions.png now compares the human eval set against the
+selected generated set (n=2000 each) on the same five features as before;
+the two sets of violins are close to indistinguishable by eye, which is the
+picture a 0.504 detector score predicts.
+
+Also this session: docs committed at the 0.504 headline (eeb44d9), PLAN.md
+status brought up to date, three dead docs removed in the same commit.

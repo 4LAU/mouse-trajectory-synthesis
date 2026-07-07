@@ -80,43 +80,106 @@ def fig_auc_progression():
     print(f"Saved {out}")
 
 
+POOL_FILE = "pool_s42_k16.npz"
+PICKS_FILE = "pool_s42_k16_picks_trust33_f20d85_r30_rf.npy"
+
+
+def _load_selected_pool():
+    """Selected set for seed 42: the exact trajectories behind the 0.504 result.
+
+    Returns (trajs, feats): one raw trajectory and one 18-feature row per spec,
+    taken from the cached candidate pool via the winning trust-loop picks.
+    No GPU work; the pool was generated once and cached.
+    """
+    d = np.load(POOL_FILE, allow_pickle=True)
+    picks = np.load(PICKS_FILE).astype(int)
+    picks = picks[picks >= 0]
+    trajs = [np.asarray(d["trajs"][ci], dtype=np.float64) for ci in picks]
+    feats = d["X"][picks]
+    return trajs, feats
+
+
 def fig_trajectory_overlay():
-    """Overlay of human, ZIMT, and corpus_rotate trajectories for the same query."""
-    from experiments._common import Trajectory
-    from experiments.zimt_magcorr import generate_path as zimt_generate
-    from experiments.corpus_rotate import generate_path as rotate_generate
+    """Held-out human paths next to generated paths of matched lengths."""
+    from features import FEATURE_NAMES
 
-    np.random.seed(42)
-    human_feats = np.load("data/human_eval_features.npy")
-    distances = np.load("data/human_distances.npy")
+    gen_trajs, gen_feats = _load_selected_pool()
+    eff_i = FEATURE_NAMES.index("path_efficiency")
 
-    start_x, start_y = 150.0, 640.0
-    end_x, end_y = 350.0, 950.0
+    positions = np.load("training/test_positions.npy", mmap_mode="r")
+    n_real = np.load("training/test_n_real.npy")
+    conditions = np.load("training/test_conditions.npy", mmap_mode="r")
 
-    zimt_traj = zimt_generate(start_x, start_y, end_x, end_y)
-    rotate_traj = rotate_generate(start_x, start_y, end_x, end_y)
+    def gen_distance(traj):
+        return float(np.hypot(traj[-1, 0] - traj[0, 0], traj[-1, 1] - traj[0, 1]))
 
-    zx = [p[0] for p in zimt_traj]
-    zy = [p[1] for p in zimt_traj]
-    rx = [p[0] for p in rotate_traj]
-    ry = [p[1] for p in rotate_traj]
+    # Four generated paths spanning short to long movements. Within each
+    # distance band take the path of median directness, so the examples are
+    # typical of the selected set rather than tail cases.
+    dists = np.array([gen_distance(t) for t in gen_trajs])
+    lens = np.array([len(t) for t in gen_trajs])
+    chosen_gen = []
+    for q in (25, 50, 75, 92):
+        target = np.percentile(dists, q)
+        band = np.where((np.abs(dists - target) < 0.12 * target)
+                        & (lens >= 15))[0]
+        band = np.array([i for i in band if i not in chosen_gen])
+        effs = gen_feats[band, eff_i]
+        idx = int(band[np.argsort(effs)[len(effs) // 2]])
+        chosen_gen.append(idx)
 
-    fig, ax = plt.subplots(figsize=(7, 7))
-    ax.plot(rx, ry, color="#40D8D8", linewidth=2.0, label="Corpus Rotate", alpha=0.85)
-    ax.plot(zx, zy, color="#E08040", linewidth=2.0, label="ZIMT (magcorr)", alpha=0.85)
+    # Match each generated path with a held-out human path of similar
+    # distance and typical directness.
+    rng = np.random.default_rng(7)
+    hum_pool = rng.choice(len(n_real), size=20000, replace=False)
+    hum_pool = hum_pool[n_real[hum_pool] >= 40]
+    hum_dist = np.exp(np.asarray(conditions[hum_pool, 0], dtype=np.float64))
+    chosen_hum = []
+    for gi in chosen_gen:
+        cand = hum_pool[np.abs(hum_dist - dists[gi]) < 0.12 * dists[gi]]
+        cand = np.array([h for h in cand if h not in chosen_hum])
+        effs = []
+        for h in cand[:200]:
+            L = int(n_real[h])
+            p = np.asarray(positions[h, :L], dtype=np.float64)
+            seg = np.hypot(*np.diff(p, axis=0).T).sum()
+            effs.append(1.0 / max(seg, 1e-9))
+        chosen_hum.append(int(cand[:200][np.argsort(effs)[len(effs) // 2]]))
 
-    ax.plot(start_x, start_y, "ko", markersize=10, zorder=5, label="Start")
-    ax.plot(end_x, end_y, "kX", markersize=12, zorder=5, label="End")
+    fig, axes = plt.subplots(2, 4, figsize=(15, 7.5))
+    for col in range(4):
+        hi = chosen_hum[col]
+        L = int(n_real[hi])
+        scale = float(np.exp(conditions[hi, 0]))
+        hp = np.asarray(positions[hi, :L], dtype=np.float64) * scale
 
-    ax.set_xlabel("x (px)", fontsize=12)
-    ax.set_ylabel("y (px)", fontsize=12)
-    ax.set_title("Generated Trajectories", fontsize=14, fontweight="bold")
-    ax.legend(fontsize=10)
-    ax.set_aspect("equal")
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
+        gi = chosen_gen[col]
+        gp = gen_trajs[gi][:, :2] - gen_trajs[gi][0, :2]
 
-    plt.tight_layout()
+        for row, (p, color, name) in enumerate(
+                [(hp, "#4488CC", "Human (held out)"),
+                 (gp, "#2CB25C", "Generated (selected)")]):
+            ax = axes[row, col]
+            ax.plot(p[:, 0], p[:, 1], color=color, linewidth=1.6, alpha=0.9)
+            ax.plot(p[0, 0], p[0, 1], "ko", markersize=6, zorder=5)
+            ax.plot(p[-1, 0], p[-1, 1], "kX", markersize=8, zorder=5)
+            d = np.hypot(p[-1, 0] - p[0, 0], p[-1, 1] - p[0, 1])
+            ax.set_title(f"{name}, {d:.0f} px", fontsize=10)
+            # Square, centered limits so every panel gets the same box.
+            cx = (p[:, 0].min() + p[:, 0].max()) / 2
+            cy = (p[:, 1].min() + p[:, 1].max()) / 2
+            r = max(p[:, 0].max() - p[:, 0].min(),
+                    p[:, 1].max() - p[:, 1].min()) / 2 * 1.15 + 1.0
+            ax.set_xlim(cx - r, cx + r)
+            ax.set_ylim(cy - r, cy + r)
+            ax.set_aspect("equal")
+            ax.tick_params(labelsize=8)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+
+    fig.suptitle("Held-out human vs generated trajectories (event-stream model, "
+                 "set-level selection, seed 42)", fontsize=14, fontweight="bold")
+    plt.tight_layout(rect=(0, 0, 1, 0.96))
     out = FIGURES_DIR / "trajectory_overlay.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -124,16 +187,11 @@ def fig_trajectory_overlay():
 
 
 def fig_feature_distributions():
-    """Violin plots comparing human vs ZIMT vs corpus_rotate feature distributions."""
-    from features import extract_features, FEATURE_NAMES
-    from experiments.zimt_magcorr import generate_path as zimt_generate
-    from experiments.corpus_rotate import generate_path as rotate_generate
+    """Violin plots: human eval features vs the selected generated set."""
+    from features import FEATURE_NAMES
 
     human_feats = np.load("data/human_eval_features.npy")
-    distances = np.load("data/human_distances.npy")
-
-    n_samples = 500
-    rng = np.random.default_rng(42)
+    _, gen_feats = _load_selected_pool()
 
     display_features = [
         ("mean_velocity", "Mean Velocity"),
@@ -144,28 +202,6 @@ def fig_feature_distributions():
     ]
     feat_indices = [FEATURE_NAMES.index(f[0]) for f in display_features]
 
-    def _generate_features(gen_fn, n):
-        feats = []
-        for i in range(n):
-            idx = rng.integers(0, len(distances))
-            dist = distances[idx]
-            angle = rng.uniform(0, 2 * np.pi)
-            sx, sy = 500.0, 500.0
-            ex = sx + dist * np.cos(angle)
-            ey = sy + dist * np.sin(angle)
-            traj = gen_fn(sx, sy, ex, ey)
-            f = extract_features(traj)
-            if f is not None:
-                feats.append(f)
-            if (i + 1) % 100 == 0:
-                print(f"  {i + 1}/{n}")
-        return np.array(feats)
-
-    print(f"Generating {n_samples} ZIMT trajectories...")
-    zimt_feats = _generate_features(zimt_generate, n_samples)
-    print(f"Generating {n_samples} corpus_rotate trajectories...")
-    rotate_feats = _generate_features(rotate_generate, n_samples)
-
     fig, axes = plt.subplots(1, len(display_features), figsize=(18, 4))
 
     for ax_i, (feat_name, display_name) in enumerate(display_features):
@@ -173,19 +209,17 @@ def fig_feature_distributions():
         ax = axes[ax_i]
 
         h_vals = human_feats[:, fi]
-        z_vals = zimt_feats[:, fi]
-        r_vals = rotate_feats[:, fi]
+        g_vals = gen_feats[:, fi]
 
-        all_vals = np.concatenate([h_vals, z_vals, r_vals])
+        all_vals = np.concatenate([h_vals, g_vals])
         p95 = np.percentile(all_vals, 95)
         p5 = np.percentile(all_vals, 5)
         h_clip = np.clip(h_vals, p5, p95)
-        z_clip = np.clip(z_vals, p5, p95)
-        r_clip = np.clip(r_vals, p5, p95)
+        g_clip = np.clip(g_vals, p5, p95)
 
-        data = [h_clip, z_clip, r_clip]
-        positions = [1, 2, 3]
-        colors = ["#4488CC", "#E08040", "#40D8D8"]
+        data = [h_clip, g_clip]
+        positions = [1, 2]
+        colors = ["#4488CC", "#2CB25C"]
 
         parts = ax.violinplot(data, positions=positions, showmedians=True, widths=0.7)
         for pc, color in zip(parts["bodies"], colors):
@@ -196,12 +230,13 @@ def fig_feature_distributions():
             parts[key].set_linewidth(0.8)
 
         ax.set_xticks(positions)
-        ax.set_xticklabels(["Human", "ZIMT", "Rotate"], fontsize=8)
+        ax.set_xticklabels(["Human", "Generated"], fontsize=9)
         ax.set_title(display_name, fontsize=10, fontweight="bold")
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
 
-    fig.suptitle("Feature Distribution Comparison", fontsize=14, fontweight="bold", y=1.02)
+    fig.suptitle("Feature distributions: human eval set vs selected generated set "
+                 "(seed 42, n=2000 each)", fontsize=14, fontweight="bold", y=1.02)
     plt.tight_layout()
     out = FIGURES_DIR / "feature_distributions.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
