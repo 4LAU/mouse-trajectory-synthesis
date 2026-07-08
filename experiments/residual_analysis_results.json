@@ -1,0 +1,344 @@
+{
+  "sanity_gate": {
+    "seed": 42,
+    "reproduced_auc": 0.54209675,
+    "published_auc": 0.5421,
+    "diff": 3.250000000010189e-06,
+    "pass": true
+  },
+  "per_seed_auc": {
+    "42": 0.54209675,
+    "43": 0.5529777499999999,
+    "44": 0.5496512499999999
+  },
+  "coefficients": {
+    "42": {
+      "mean_velocity": -0.056235671978748264,
+      "std_velocity": 0.3588805683101908,
+      "max_velocity": 0.257292251735481,
+      "velocity_skewness": -0.008663529678910905,
+      "mean_acceleration": 0.4051039986582346,
+      "std_acceleration": -0.1554947298436167,
+      "max_acceleration": 0.12906440844069217,
+      "mean_jerk": -0.8237432915564198,
+      "std_jerk": -0.36903304392748176,
+      "path_efficiency": 0.017731247279137486,
+      "max_deviation": 0.01738130692920632,
+      "curvature_mean": 0.14170208155097014,
+      "curvature_std": -0.3956981769537392,
+      "num_direction_changes": 0.282822508858518,
+      "movement_duration": -0.27512289998155637,
+      "time_to_peak_velocity": 0.016397676863141808,
+      "angular_velocity_mean": 0.12443992869256643,
+      "angular_velocity_std": -0.07045229477050413
+    },
+    "43": {
+      "mean_velocity": 0.022758668713316676,
+      "std_velocity": 0.4999841488448762,
+      "max_velocity": 0.09137065581946296,
+      "velocity_skewness": 0.006465625572995443,
+      "mean_acceleration": -0.2277579045919568,
+      "std_acceleration": -0.1653352500514482,
+      "max_acceleration": -0.01613843607782079,
+      "mean_jerk": 0.05352959555720124,
+      "std_jerk": -0.5400174345969659,
+      "path_efficiency": 0.004910353517832132,
+      "max_deviation": 0.028457511461306182,
+      "curvature_mean": 0.19064245614934006,
+      "curvature_std": -0.4729448133661377,
+      "num_direction_changes": 0.19207868246793355,
+      "movement_duration": -0.17508966605110074,
+      "time_to_peak_velocity": 0.02093903884143145,
+      "angular_velocity_mean": 0.25667302108825923,
+      "angular_velocity_std": -0.18477190560373674
+    },
+    "44": {
+      "mean_velocity": -0.05337853036401127,
+      "std_velocity": 0.2424691392252275,
+      "max_velocity": 0.08892413961372547,
+      "velocity_skewness": 0.007833626559657969,
+      "mean_acceleration": 0.038826829803117906,
+      "std_acceleration": -0.2183718260547049,
+      "max_acceleration": -0.01575173422102658,
+      "mean_jerk": -0.23608510882337227,
+      "std_jerk": -0.6251026123012432,
+      "path_efficiency": 0.019226895506201356,
+      "max_deviation": 0.049152834626526976,
+      "curvature_mean": 0.1898983003541937,
+      "curvature_std": -0.449873925733181,
+      "num_direction_changes": 0.2688734172203375,
+      "movement_duration": -0.261930638265764,
+      "time_to_peak_velocity": 0.024422559276000785,
+      "angular_velocity_mean": 0.24632972169018538,
+      "angular_velocity_std": -0.17919688978612047
+    }
+  },
+  "top5_by_seed": {
+    "42": [
+      "mean_jerk",
+      "mean_acceleration",
+      "curvature_std",
+      "std_jerk",
+      "std_velocity"
+    ],
+    "43": [
+      "std_jerk",
+      "std_velocity",
+      "curvature_std",
+      "angular_velocity_mean",
+      "mean_acceleration"
+    ],
+    "44": [
+      "std_jerk",
+      "curvature_std",
+      "num_direction_changes",
+      "movement_duration",
+      "angular_velocity_mean"
+    ]
+  },
+  "stable_top5": [
+    "std_jerk",
+    "curvature_std"
+  ],
+  "ablation": {
+    "speed": {
+      "per_seed": {
+        "42": 0.54791675,
+        "43": 0.5519625,
+        "44": 0.5544377500000001
+      },
+      "mean": 0.5514389999999999,
+      "chance_gap": 0.0514389999999999,
+      "dropped": [
+        "mean_velocity",
+        "std_velocity",
+        "max_velocity",
+        "velocity_skewness"
+      ]
+    },
+    "accel_jerk": {
+      "per_seed": {
+        "42": 0.54127575,
+        "43": 0.5525654999999999,
+        "44": 0.5482337500000001
+      },
+      "mean": 0.5473583333333334,
+      "chance_gap": 0.04735833333333339,
+      "dropped": [
+        "mean_acceleration",
+        "std_acceleration",
+        "max_acceleration",
+        "mean_jerk",
+        "std_jerk"
+      ]
+    },
+    "curvature": {
+      "per_seed": {
+        "42": 0.5181877500000001,
+        "43": 0.51284375,
+        "44": 0.5173300000000001
+      },
+      "mean": 0.5161205000000001,
+      "chance_gap": 0.016120500000000093,
+      "dropped": [
+        "curvature_mean",
+        "curvature_std",
+        "angular_velocity_mean",
+        "angular_velocity_std"
+      ]
+    },
+    "shape": {
+      "per_seed": {
+        "42": 0.527246,
+        "43": 0.54855125,
+        "44": 0.54412425
+      },
+      "mean": 0.5399738333333333,
+      "chance_gap": 0.039973833333333264,
+      "dropped": [
+        "path_efficiency",
+        "max_deviation",
+        "num_direction_changes"
+      ]
+    },
+    "duration": {
+      "per_seed": {
+        "42": 0.53320975,
+        "43": 0.55165225,
+        "44": 0.5407275
+      },
+      "mean": 0.5418631666666667,
+      "chance_gap": 0.041863166666666674,
+      "dropped": [
+        "movement_duration",
+        "time_to_peak_velocity"
+      ]
+    }
+  },
+  "full_mean_auc": 0.5482419166666667,
+  "closest_to_chance_group": "curvature",
+  "direction": {
+    "std_jerk": {
+      "human_mean": 33914441.15478497,
+      "human_std": 840802107.6980543,
+      "human_median": 5436429.51552345,
+      "human_iqr": 7860447.746620494,
+      "per_seed": {
+        "42": {
+          "synth_mean": 10640398.177423527,
+          "synth_std": 26571033.80655708,
+          "z_shift": -0.027680761934673368,
+          "median_shift_in_iqr": -0.018961086581119283,
+          "p99_tail_ratio": 0.786349931822841
+        },
+        "43": {
+          "synth_mean": 10794757.381686842,
+          "synth_std": 21024777.425860293,
+          "z_shift": -0.027497176281342982,
+          "median_shift_in_iqr": -0.02126344177833225,
+          "p99_tail_ratio": 0.9523661912370198
+        },
+        "44": {
+          "synth_mean": 10308627.6666717,
+          "synth_std": 17641045.808669645,
+          "z_shift": -0.028075350040143453,
+          "median_shift_in_iqr": -0.01579786637198766,
+          "p99_tail_ratio": 0.8123785598805638
+        }
+      }
+    },
+    "curvature_std": {
+      "human_mean": 7840.874137883237,
+      "human_std": 32937.3199109259,
+      "human_median": 0.3358132872953923,
+      "human_iqr": 1.3814575005815166,
+      "per_seed": {
+        "42": {
+          "synth_mean": 2225.952469092161,
+          "synth_std": 16281.527713460328,
+          "z_shift": -0.17047293720241352,
+          "median_shift_in_iqr": -0.011735977246876037,
+          "p99_tail_ratio": 0.6137646358184254
+        },
+        "43": {
+          "synth_mean": 1888.1058016492118,
+          "synth_std": 14929.7680138701,
+          "z_shift": -0.1807301976096539,
+          "median_shift_in_iqr": -0.0022847663306604744,
+          "p99_tail_ratio": 0.5232943883006617
+        },
+        "44": {
+          "synth_mean": 2179.741368738642,
+          "synth_std": 16510.871918137145,
+          "z_shift": -0.17187593843258314,
+          "median_shift_in_iqr": -0.011270617963277385,
+          "p99_tail_ratio": 0.5336920213417976
+        }
+      }
+    }
+  },
+  "second_moment": {
+    "linear_only_mean_auc": 0.5482419166666667,
+    "linear_plus_squared_mean_auc": 0.5492835833333333,
+    "delta": 0.0010416666666666075,
+    "variance_ratio_by_feature": {
+      "mean_velocity": {
+        "42": 0.01969159679848212,
+        "43": 0.01940997827492825,
+        "44": 0.018274346012342225
+      },
+      "std_velocity": {
+        "42": 0.0006457994267409368,
+        "43": 0.0006167603136485048,
+        "44": 0.0004944651012214348
+      },
+      "max_velocity": {
+        "42": 0.0005122766009753168,
+        "43": 0.00035972734024488485,
+        "44": 0.00031028218878796345
+      },
+      "velocity_skewness": {
+        "42": 0.8715400037644779,
+        "43": 0.9021316143810437,
+        "44": 0.870197881329632
+      },
+      "mean_acceleration": {
+        "42": 0.0002680476808278965,
+        "43": 0.00033490957624252997,
+        "44": 0.00015911971888296164
+      },
+      "std_acceleration": {
+        "42": 0.0004517524018280665,
+        "43": 0.0003168342862815032,
+        "44": 0.0002220175875874247
+      },
+      "max_acceleration": {
+        "42": 0.00039272379068494025,
+        "43": 0.00025915411385265044,
+        "44": 0.0001798119729573095
+      },
+      "mean_jerk": {
+        "42": 0.00023928641242112846,
+        "43": 0.0001620581162460222,
+        "44": 0.00011743726435053077
+      },
+      "std_jerk": {
+        "42": 0.0009986868248891567,
+        "43": 0.0006252809974167017,
+        "44": 0.0004402111839746089
+      },
+      "path_efficiency": {
+        "42": 0.9587179894100623,
+        "43": 0.9868322289103486,
+        "44": 0.9777030301136378
+      },
+      "max_deviation": {
+        "42": 1.2860899208199343,
+        "43": 1.3325712548690642,
+        "44": 1.5753177323414327
+      },
+      "curvature_mean": {
+        "42": 0.1904596961042054,
+        "43": 0.17317976725036027,
+        "44": 0.2163752997160453
+      },
+      "curvature_std": {
+        "42": 0.24435081369231504,
+        "43": 0.20546109719503167,
+        "44": 0.25128322708073114
+      },
+      "num_direction_changes": {
+        "42": 0.6297817918608237,
+        "43": 0.6123159347870298,
+        "44": 0.6492223541266461
+      },
+      "movement_duration": {
+        "42": 0.3572462788990535,
+        "43": 0.35441284826328817,
+        "44": 0.37137735293984797
+      },
+      "time_to_peak_velocity": {
+        "42": 0.9728187589647377,
+        "43": 0.9637134040383744,
+        "44": 0.9814032313830136
+      },
+      "angular_velocity_mean": {
+        "42": 1.0590152453827175,
+        "43": 1.1208612059473526,
+        "44": 1.074127705323444
+      },
+      "angular_velocity_std": {
+        "42": 0.9702758811717641,
+        "43": 1.0191599901964685,
+        "44": 0.9903855362371693
+      }
+    },
+    "most_extreme_variance_ratio_features": [
+      "max_velocity",
+      "std_acceleration",
+      "max_acceleration",
+      "mean_acceleration",
+      "mean_jerk"
+    ]
+  }
+}

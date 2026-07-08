@@ -3114,3 +3114,77 @@ transfer, a synthetic trajectory generated for one recording environment
 convincing a detector trained on data from a different one, is a separate
 and apparently much harder problem. Two independent sets of real human
 mouse movements fail at it against each other.
+
+## Naming the 0.54 linear residual (July 8)
+
+T3 asks for the one piece of the July 7 stretch day that was disclosed but
+never explained: a logistic regression on the same 18 hand-crafted
+features reads around 0.54 against the headline-selected synthetic sets,
+while the random forest that defines the headline sits at chance on the
+identical rows. Before reading anything into that gap, residual_analysis.py
+reproduces it first. external_detectors.py's LogReg block, StandardScaler
+plus LogisticRegression, five-fold stratified CV, on data/human_eval_features.npy
+against the seed-42 headline picks, was logged at 0.5421 on July 7. The
+same pipeline run today against the same inputs returns 0.54210, a
+difference of three parts in a hundred thousand. The gate holds, so the
+rest of this entry is built on a number that actually reproduces.
+
+Repeating the fit on the three seeded picks gives 0.5421, 0.5530, and
+0.5497, all a few points above chance and none near the 0.50 the random
+forest gets on the same rows. Standardizing the 18 features and reading
+the logistic weights per seed turns up a consistent short list: mean_jerk,
+mean_acceleration, std_jerk, curvature_std, std_velocity, and
+angular_velocity_mean trade the top-five spot across the three seeds, and
+two features, std_jerk and curvature_std, land in the top five for every
+seed. The signs agree with each other across seeds wherever a feature
+repeats: negative on the jerk and curvature terms, positive on the
+acceleration and speed-spread terms.
+
+Dropping whole feature groups and refitting on the remaining fourteen
+columns shows the signal is not concentrated in one family. Removing
+speed leaves the detector at 0.551, removing acceleration and jerk leaves
+it at 0.547, removing duration and time-to-peak leaves it at 0.542,
+removing the shape features (path efficiency, max deviation, direction
+changes) leaves it at 0.540, and removing curvature and angular velocity
+is the only drop that moves the needle, down to 0.516. Even the best case
+stays six points above chance. No group is a single point of failure, which
+matches what the random-forest importances already said about this
+feature set: the tell is spread thin enough that closing one channel does
+not close the detector.
+
+The direction of the shift is where the finding sharpens. Comparing means
+and standard deviations, human and synthetic jerk and curvature look
+different by a fraction of a human standard deviation, which reads as a
+weak effect. But the mean and standard deviation of these features are set
+almost entirely by rare extreme values, not by the typical trajectory: the
+99th percentile of human mean_jerk sits below the raw mean, because a
+small number of sessions carry jerk spikes two orders of magnitude past
+the bulk of the data. Comparing medians and interquartile ranges instead,
+human and synthetic std_jerk and curvature_std sit within two hundredths
+of an IQR of each other, essentially the same typical movement. What
+differs is the tail: the 99th-percentile magnitude of synthetic std_jerk
+is 85 percent of the human 99th percentile, and for curvature_std it is 56
+percent. Appending squared standardized features to the logistic input
+barely moves the fit, 0.5482 to 0.5493 averaged across seeds, which is the
+wrong shape for a curvature-in-feature-space story and the right shape for
+a support story: the residual is not a bend the model could fit with a
+quadratic term, it is data simply missing from the far end of the
+distribution.
+
+So the one-sentence version: synthetic sets reproduce the typical human
+movement almost exactly but under-represent the rare, high-jerk,
+high-curvature outlier movements that real recording sessions
+occasionally produce, and a plain logistic regression is well suited to
+noticing that a population's tail got shorter even when a random forest,
+built to split on typical ranges rather than count rare extremes, is not.
+This confirms the July 7 working hypothesis (support or variance deficit
+in the candidate pool) rather than a mean shift, and it explains why K=32
+halved the MLP residual without touching the linear one: doubling the
+pool gives the trust loop more candidates to pick a near-median specimen
+from, but candidates drawn from the same generator do not manufacture
+tail events the generator itself under-produces. Per T3's instruction,
+this is a naming exercise, not a fix: chasing the residual below its
+current floor would mean changing the generator, and that family of
+attempts stays closed for this project. Full per-seed coefficients,
+group-ablation numbers, and the tail-ratio figures are in
+experiments/residual_analysis_results.json.
