@@ -18,3 +18,4 @@ run_corrected_evals.sh
 parse_eval_results.py
 *_backup.json
 PLAN.md
+external_data/

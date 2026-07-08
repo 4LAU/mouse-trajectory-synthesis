@@ -3041,3 +3041,76 @@ else. The repository is public as of today, relicensed Apache-2.0 with
 a citation file, and the five source datasets are credited the way
 their authors ask (two are CC BY 4.0, three publish citation requests
 in place of a license).
+
+## External validation: two datasets the model never saw (July 8)
+
+Everything published so far proves the headline within the five datasets
+that built the training pool. A reviewer's first question would be whether
+that number survives contact with a mouse-movement dataset the model has
+never seen, recorded on hardware and in software this project never
+touched. Today went to finding two such datasets, running the exact
+detector suite against them, and writing down what the result actually
+means.
+
+The hunt took longer than the validation did. Attentive Cursor was the
+first candidate and the first rejection: its event logging runs at roughly
+8 Hz, which after canonical segmentation yields only 1,560 movements with a
+median of 6 points each, too sparse to trust as anything but an
+instrumentation artifact rather than a fair comparison. HuMIdb turned out
+to be touch-only, no mouse data. TWOS's host is dead. ReMouse sits behind a
+paywall. Edge Hill has 88 users but mixes device types in a way that would
+confound the comparison before the detector even runs. Two candidates
+survived: AdSERP (Latifzadeh, Gwizdka and Leiva, SIGIR 2025, Zenodo
+15236546, CC BY 4.0), 47 users and 11,580 valid movements under the
+canonical segmentation rule at roughly 50 Hz, and M4D (Iliou et al. 2021,
+CC BY-NC-SA), 94 human sessions and 17,018 valid movements at roughly
+59 Hz.
+
+The protocol was kept deliberately boring. Segmentation follows
+setup_data.py's canonical rule exactly, feature extraction calls
+features.extract_feature_matrix unchanged, and the detector block is
+copied verbatim from evaluate.py with no retuning. 2,000 movements were
+sampled from each external set with rng seed 42. Before trusting any new
+number, the pipeline had to reproduce the published seed-42 headline of
+0.5095 through its own loading code, which it did to the fourth digit.
+
+Results, RF-OOB:
+
+| comparison | seed 42 | seed 43 | seed 44 |
+|---|---|---|---|
+| AdSERP vs selected synthetics | 0.9479 | 0.9470 | 0.9496 |
+| M4D vs selected synthetics | 0.920 | 0.922 | 0.920 |
+
+AdSERP against our internal held-out humans reads 0.9473. M4D against our
+internal humans reads 0.918. M4D against AdSERP, humans against humans,
+reads 0.805.
+
+Read those five numbers together and a pattern falls out that the headline
+alone would never have shown: every dataset separates from every other
+dataset, including human sets from other human sets. The detector is not
+reading humanness. It is reading recording apparatus and environment,
+device polling behavior, browser event timing, whatever differs between
+one capture setup and the next. The quantity that actually matters is not
+the raw external-vs-synthetic number, which looks damning in isolation. It
+is the gap between that number and external-vs-our-humans: 0.001 on
+AdSERP, 0.002 on M4D, a tie within noise, consistent across both external
+sets and all three seeds. Selected synthetics sit exactly where our own
+humans sit, relative to a dataset recorded somewhere else.
+
+A curvature ablation checked whether this tie was riding on one feature.
+curvature_mean and curvature_std carry the largest distribution distance
+to either external set, so both were dropped and every comparison rerun on
+the remaining 16 features. External separability barely moves, still
+around 0.947 on AdSERP, and the internal headline stays at chance, 0.48 to
+0.50 depending on seed. No single feature family carries either result;
+what is left riding the external separation is velocity, acceleration,
+jerk, and angular-velocity scale differences, the same kinematic
+quantities the rest of this project has been tracking all along.
+
+Scope statement, stated plainly because it needs to travel with the
+result: this work claims indistinguishability under a fixed recording
+setup, matched to the training pool's capture characteristics. Cross-setup
+transfer, a synthetic trajectory generated for one recording environment
+convincing a detector trained on data from a different one, is a separate
+and apparently much harder problem. Two independent sets of real human
+mouse movements fail at it against each other.

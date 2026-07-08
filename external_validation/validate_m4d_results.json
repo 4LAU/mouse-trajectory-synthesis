@@ -1,0 +1,88 @@
+{
+  "main_per_seed": {
+    "42": {
+      "n_class0_total": 2000,
+      "n_class1_total": 2000,
+      "n_use_per_class": 2000,
+      "rf_oob_auc": 0.920281625,
+      "rf_5fold_cv_auc": 0.921582875,
+      "gbm_5fold_cv_auc": 0.92843225
+    },
+    "43": {
+      "n_class0_total": 2000,
+      "n_class1_total": 2000,
+      "n_use_per_class": 2000,
+      "rf_oob_auc": 0.9218693750000002,
+      "rf_5fold_cv_auc": 0.9211386249999999,
+      "gbm_5fold_cv_auc": 0.92754675
+    },
+    "44": {
+      "n_class0_total": 2000,
+      "n_class1_total": 2000,
+      "n_use_per_class": 2000,
+      "rf_oob_auc": 0.9197852500000001,
+      "rf_5fold_cv_auc": 0.9215543749999999,
+      "gbm_5fold_cv_auc": 0.9289117500000001
+    }
+  },
+  "control_1_vs_human_eval": {
+    "n_class0_total": 2000,
+    "n_class1_total": 2000,
+    "n_use_per_class": 2000,
+    "rf_oob_auc": 0.9178544999999999,
+    "rf_5fold_cv_auc": 0.9193295000000001,
+    "gbm_5fold_cv_auc": 0.9257527499999999
+  },
+  "control_2_vs_adserp": {
+    "n_class0_total": 2000,
+    "n_class1_total": 2000,
+    "n_use_per_class": 2000,
+    "rf_oob_auc": 0.804815875,
+    "rf_5fold_cv_auc": 0.80641175,
+    "gbm_5fold_cv_auc": 0.8150452500000002
+  },
+  "wasserstein_main_seed42": [
+    {
+      "feature": "angular_velocity_mean",
+      "wasserstein": 1.3081497227983667
+    },
+    {
+      "feature": "curvature_mean",
+      "wasserstein": 1.2129215080318365
+    },
+    {
+      "feature": "curvature_std",
+      "wasserstein": 0.9108754698990517
+    },
+    {
+      "feature": "angular_velocity_std",
+      "wasserstein": 0.7786542485852606
+    },
+    {
+      "feature": "mean_velocity",
+      "wasserstein": 0.5298773988497305
+    }
+  ],
+  "wasserstein_control_1": [
+    {
+      "feature": "curvature_mean",
+      "wasserstein": 4.635576962224155
+    },
+    {
+      "feature": "curvature_std",
+      "wasserstein": 3.2672390985359185
+    },
+    {
+      "feature": "max_acceleration",
+      "wasserstein": 1.9989296809628958
+    },
+    {
+      "feature": "mean_jerk",
+      "wasserstein": 1.867722370899706
+    },
+    {
+      "feature": "max_velocity",
+      "wasserstein": 1.7416108200834
+    }
+  ]
+}

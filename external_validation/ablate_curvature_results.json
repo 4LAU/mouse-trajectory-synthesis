@@ -1,0 +1,330 @@
+{
+  "feature_names_18": [
+    "mean_velocity",
+    "std_velocity",
+    "max_velocity",
+    "velocity_skewness",
+    "mean_acceleration",
+    "std_acceleration",
+    "max_acceleration",
+    "mean_jerk",
+    "std_jerk",
+    "path_efficiency",
+    "max_deviation",
+    "curvature_mean",
+    "curvature_std",
+    "num_direction_changes",
+    "movement_duration",
+    "time_to_peak_velocity",
+    "angular_velocity_mean",
+    "angular_velocity_std"
+  ],
+  "dropped_indices": [
+    11,
+    12
+  ],
+  "dropped_names": [
+    "curvature_mean",
+    "curvature_std"
+  ],
+  "kept_names_16": [
+    "mean_velocity",
+    "std_velocity",
+    "max_velocity",
+    "velocity_skewness",
+    "mean_acceleration",
+    "std_acceleration",
+    "max_acceleration",
+    "mean_jerk",
+    "std_jerk",
+    "path_efficiency",
+    "max_deviation",
+    "num_direction_changes",
+    "movement_duration",
+    "time_to_peak_velocity",
+    "angular_velocity_mean",
+    "angular_velocity_std"
+  ],
+  "curvature_diagnostics_18feat": {
+    "adserp": {
+      "mean": 0.5262381969384123,
+      "median": 0.1942729103888104,
+      "frac_gt_10": 0.005,
+      "n": 2000
+    },
+    "internal_human": {
+      "mean": 1197.1923918471268,
+      "median": 0.1115744893031952,
+      "frac_gt_10": 0.0735,
+      "n": 2000
+    },
+    "synth_seed42": {
+      "mean": 317.71857422239833,
+      "median": 0.10706551816814666,
+      "frac_gt_10": 0.0345,
+      "n": 2000
+    }
+  },
+  "main_per_seed_16feat": {
+    "42": {
+      "n_class0_total": 2000,
+      "n_class1_total": 2000,
+      "n_use_per_class": 2000,
+      "rf_oob_auc": 0.946624125,
+      "rf_5fold_cv_auc": 0.9478819999999999,
+      "gbm_5fold_cv_auc": 0.9540530000000002,
+      "rf_top5_feature_importances": [
+        {
+          "feature": "angular_velocity_mean",
+          "importance": 0.16166196219707624
+        },
+        {
+          "feature": "std_jerk",
+          "importance": 0.1492911470240526
+        },
+        {
+          "feature": "mean_jerk",
+          "importance": 0.11141903977016017
+        },
+        {
+          "feature": "angular_velocity_std",
+          "importance": 0.10340009654607499
+        },
+        {
+          "feature": "std_acceleration",
+          "importance": 0.07655429822739257
+        }
+      ],
+      "top5_wasserstein": [
+        {
+          "feature": "angular_velocity_mean",
+          "normalized_wasserstein": 1.705313292520964
+        },
+        {
+          "feature": "mean_velocity",
+          "normalized_wasserstein": 1.1841130399046358
+        },
+        {
+          "feature": "angular_velocity_std",
+          "normalized_wasserstein": 1.1595526212930187
+        },
+        {
+          "feature": "std_jerk",
+          "normalized_wasserstein": 0.5998609395474848
+        },
+        {
+          "feature": "std_velocity",
+          "normalized_wasserstein": 0.5924658775120258
+        }
+      ]
+    },
+    "43": {
+      "n_class0_total": 2000,
+      "n_class1_total": 2000,
+      "n_use_per_class": 2000,
+      "rf_oob_auc": 0.94805425,
+      "rf_5fold_cv_auc": 0.949142125,
+      "gbm_5fold_cv_auc": 0.956243,
+      "rf_top5_feature_importances": [
+        {
+          "feature": "angular_velocity_mean",
+          "importance": 0.17422917383869874
+        },
+        {
+          "feature": "std_jerk",
+          "importance": 0.1427864684760297
+        },
+        {
+          "feature": "angular_velocity_std",
+          "importance": 0.1058418358684973
+        },
+        {
+          "feature": "mean_jerk",
+          "importance": 0.10079797267673653
+        },
+        {
+          "feature": "std_acceleration",
+          "importance": 0.07699708023948895
+        }
+      ],
+      "top5_wasserstein": [
+        {
+          "feature": "angular_velocity_mean",
+          "normalized_wasserstein": 1.7656698920949028
+        },
+        {
+          "feature": "mean_velocity",
+          "normalized_wasserstein": 1.2188832151525753
+        },
+        {
+          "feature": "angular_velocity_std",
+          "normalized_wasserstein": 1.1717963547717816
+        },
+        {
+          "feature": "std_velocity",
+          "normalized_wasserstein": 0.616215714513581
+        },
+        {
+          "feature": "std_jerk",
+          "normalized_wasserstein": 0.6135875907698437
+        }
+      ]
+    },
+    "44": {
+      "n_class0_total": 2000,
+      "n_class1_total": 2000,
+      "n_use_per_class": 2000,
+      "rf_oob_auc": 0.94754675,
+      "rf_5fold_cv_auc": 0.9470407499999999,
+      "gbm_5fold_cv_auc": 0.95152675,
+      "rf_top5_feature_importances": [
+        {
+          "feature": "angular_velocity_mean",
+          "importance": 0.18570172093659337
+        },
+        {
+          "feature": "std_jerk",
+          "importance": 0.14350022840374027
+        },
+        {
+          "feature": "mean_jerk",
+          "importance": 0.10087371825200976
+        },
+        {
+          "feature": "angular_velocity_std",
+          "importance": 0.09109854029517164
+        },
+        {
+          "feature": "std_acceleration",
+          "importance": 0.07489325315131834
+        }
+      ],
+      "top5_wasserstein": [
+        {
+          "feature": "angular_velocity_mean",
+          "normalized_wasserstein": 1.7674506043684144
+        },
+        {
+          "feature": "mean_velocity",
+          "normalized_wasserstein": 1.1752331842577455
+        },
+        {
+          "feature": "angular_velocity_std",
+          "normalized_wasserstein": 1.1676521498076464
+        },
+        {
+          "feature": "std_velocity",
+          "normalized_wasserstein": 0.5789013134400752
+        },
+        {
+          "feature": "std_jerk",
+          "normalized_wasserstein": 0.57081082836277
+        }
+      ]
+    }
+  },
+  "control_b_adserp_vs_human_eval_16feat": {
+    "n_class0_total": 2000,
+    "n_class1_total": 2000,
+    "n_use_per_class": 2000,
+    "rf_oob_auc": 0.9475332500000001,
+    "rf_5fold_cv_auc": 0.9475382499999999,
+    "gbm_5fold_cv_auc": 0.9527795000000001,
+    "rf_top5_feature_importances": [
+      {
+        "feature": "angular_velocity_mean",
+        "importance": 0.15929401518263853
+      },
+      {
+        "feature": "std_jerk",
+        "importance": 0.1511835911716125
+      },
+      {
+        "feature": "angular_velocity_std",
+        "importance": 0.09668561181378109
+      },
+      {
+        "feature": "std_acceleration",
+        "importance": 0.09499042230459254
+      },
+      {
+        "feature": "mean_jerk",
+        "importance": 0.08823993884438537
+      }
+    ],
+    "top5_wasserstein": [
+      {
+        "feature": "mean_jerk",
+        "normalized_wasserstein": 2.9053415378643623
+      },
+      {
+        "feature": "mean_acceleration",
+        "normalized_wasserstein": 2.881824618867719
+      },
+      {
+        "feature": "std_jerk",
+        "normalized_wasserstein": 2.6572200166355797
+      },
+      {
+        "feature": "std_acceleration",
+        "normalized_wasserstein": 2.4356136429370654
+      },
+      {
+        "feature": "std_velocity",
+        "normalized_wasserstein": 2.3841652706312857
+      }
+    ]
+  },
+  "control_c_internal_headline_16feat_seed42": {
+    "n_class0_total": 2000,
+    "n_class1_total": 2000,
+    "n_use_per_class": 2000,
+    "rf_oob_auc": 0.480452375,
+    "rf_5fold_cv_auc": 0.482657125,
+    "gbm_5fold_cv_auc": 0.5005525000000001,
+    "rf_top5_feature_importances": [
+      {
+        "feature": "time_to_peak_velocity",
+        "importance": 0.06936429494856812
+      },
+      {
+        "feature": "movement_duration",
+        "importance": 0.0674857099887337
+      },
+      {
+        "feature": "velocity_skewness",
+        "importance": 0.06604130995586457
+      },
+      {
+        "feature": "mean_acceleration",
+        "importance": 0.06592806269880076
+      },
+      {
+        "feature": "mean_jerk",
+        "importance": 0.06523213255726464
+      }
+    ],
+    "top5_wasserstein": [
+      {
+        "feature": "num_direction_changes",
+        "normalized_wasserstein": 0.05020880346020823
+      },
+      {
+        "feature": "movement_duration",
+        "normalized_wasserstein": 0.040341376694313064
+      },
+      {
+        "feature": "velocity_skewness",
+        "normalized_wasserstein": 0.03364795828663967
+      },
+      {
+        "feature": "max_deviation",
+        "normalized_wasserstein": 0.03234859867666748
+      },
+      {
+        "feature": "angular_velocity_mean",
+        "normalized_wasserstein": 0.03231712599734555
+      }
+    ]
+  }
+}
