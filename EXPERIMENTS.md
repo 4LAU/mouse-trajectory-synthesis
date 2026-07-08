@@ -3147,7 +3147,7 @@ it at 0.547, removing duration and time-to-peak leaves it at 0.542,
 removing the shape features (path efficiency, max deviation, direction
 changes) leaves it at 0.540, and removing curvature and angular velocity
 is the only drop that moves the needle, down to 0.516. Even the best case
-stays six points above chance. No group is a single point of failure, which
+stays 1.6 points above chance. No group is a single point of failure, which
 matches what the random-forest importances already said about this
 feature set: the tell is spread thin enough that closing one channel does
 not close the detector.
