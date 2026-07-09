@@ -3237,16 +3237,41 @@ shared corpus:
 | synthetic (seed 44) vs corpus | 5.33 | 0.23 | 188.79 | 13.7% |
 
 Synthetic distances run slightly higher than human at the median and at
-the tail on all three seeds, not lower. The human side even has its own
-exact-zero match against the corpus (a real recording elsewhere in the
-pool with an identical resampled shape once translated to a shared
-origin), and the fraction of near-duplicates under one pixel is a touch
-lower for synthetics than for real humans at every seed, 13.7 to 14.3
-percent against 16.3 percent. None of the 2,000 synthetic picks, at any
-seed, land closer to the corpus than the first percentile of the human
-control (0.0 out of 2,000 in every case). A scale-normalized variant,
-each path divided by its own resampled span before comparison, tells the
-same story and is logged alongside the raw-pixel numbers.
+the tail on all three seeds, not lower. And the fraction of
+near-duplicates under one pixel is a touch lower for synthetics than for
+real humans at every seed, 13.7 to 14.3 percent against 16.3 percent.
+
+One row in the results file deserves to be stated out loud rather than
+left for a skeptic to find: the minimum distance is exactly zero on both
+sides. Both classes contain movements whose 64-point resampled shape
+collides with a corpus trajectory to float precision. The counts, side by
+side: 37 of the 2,000 human eval movements have an exact-shape collision
+with the corpus sample, against 17, 16, and 16 of the 2,000 synthetic
+picks at seeds 42, 43, and 44. Below a tenth of a pixel the counts are 52
+human against 19, 17, and 17 synthetic. Real held-out humans collide with
+the training corpus about twice as often as the synthetics do.
+
+What are these collisions? Characterizing every exact-collision
+trajectory answers it: they are short, nearly straight movements. The
+synthetic collisions have a median path length of 30 to 33 pixels, a
+maximum of 97, and a median path efficiency of 1.0 (minimum 0.96), which
+is to say straight lines. A short straight line between two points on the
+integer pixel grid, resampled to 64 points and translated to the origin,
+is the same vector no matter who produced it; the representation has
+almost no degrees of freedom left, so distinct movements collide in it by
+coincidence, on both sides of the comparison. The closest pairs
+themselves make the point directly: the seed 42 closest pair is a
+16-point synthetic against a 46-point corpus recording, seed 43 is 8
+points against 14, seed 44 is 62 against 18. Different raw event
+sequences, different timing, same 52, 28, or 65 pixel straight-line
+shape after resampling. That is a property of the representation, not
+evidence of copying; memorization would look like long, complex, curved
+paths matching a training item point for point, and the longest synthetic
+collision is a 97-pixel near-line. The human side has the same phenomenon
+with a longer tail (one 1,198-pixel human collision, a genuine duplicate
+inside the real data). A scale-normalized variant, each path divided by
+its own resampled span before comparison, tells the same story and is
+logged alongside the raw-pixel numbers.
 
 One-sentence verdict: the selected synthetic movements sit at least as far
 from their nearest training neighbor as real held-out human movements sit

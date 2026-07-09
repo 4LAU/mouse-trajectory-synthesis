@@ -170,6 +170,7 @@ def nn_search(query: np.ndarray, corpus: np.ndarray, chunk: int = CHUNK):
 
 
 NEAR_DUP_THRESHOLDS = (1.0, 2.0, 5.0)
+EXACT_TOL = 1e-6        # float-exact collision in the 64-point representation
 
 
 def summarize(dist: np.ndarray) -> dict:
@@ -183,7 +184,48 @@ def summarize(dist: np.ndarray) -> dict:
     }
     for thr in NEAR_DUP_THRESHOLDS:
         out[f"frac_below_{thr:g}px"] = float(np.mean(dist < thr))
+    # Collision counts: exact in float terms, and below a tenth of a pixel.
+    # Both classes are expected to have some. The 64-point origin-translated
+    # representation of a short, nearly straight movement has almost no
+    # degrees of freedom, so distinct movements (human or synthetic) can
+    # collide in it by coincidence; the characterization below verifies that
+    # is what the collisions actually are.
+    out["n_exact_collisions"] = int(np.sum(dist < EXACT_TOL))
+    out["n_below_0.1px"] = int(np.sum(dist < 0.1))
     return out
+
+
+def characterize_traj(xy: np.ndarray) -> dict:
+    """Raw-trajectory shape summary: how many recorded points, how long the
+    path is, and how straight it is (1.0 = perfectly straight)."""
+    d = np.diff(xy, axis=0)
+    seglen = np.hypot(d[:, 0], d[:, 1])
+    path_len = float(seglen.sum())
+    straight = float(np.hypot(xy[-1, 0] - xy[0, 0], xy[-1, 1] - xy[0, 1]))
+    return {
+        "n_points": int(len(xy)),
+        "path_length_px": round(path_len, 2),
+        "straight_dist_px": round(straight, 2),
+        "path_efficiency": round(straight / max(path_len, 1e-9), 4),
+    }
+
+
+def collision_stats(chars: list) -> dict:
+    """Aggregate shape stats over all exact-collision trajectories."""
+    if not chars:
+        return {"count": 0}
+    n_pts = [c["n_points"] for c in chars]
+    plen = [c["path_length_px"] for c in chars]
+    eff = [c["path_efficiency"] for c in chars]
+    return {
+        "count": len(chars),
+        "n_points_median": float(np.median(n_pts)),
+        "n_points_max": int(max(n_pts)),
+        "path_length_median_px": float(np.median(plen)),
+        "path_length_max_px": float(max(plen)),
+        "path_efficiency_median": float(np.median(eff)),
+        "path_efficiency_min": float(min(eff)),
+    }
 
 
 def main() -> None:
@@ -266,12 +308,24 @@ def main() -> None:
               f"min={human_summary['min']:.4f}")
         results[f"human_{tag}"] = human_summary
         human_p1 = human_summary["p1"]
+        h_arg = int(np.argmin(human_dist))
         human_min_pair = {
             "dist": human_summary["min"],
-            "eval_idx": int(eval_indices[int(np.argmin(human_dist))]),
-            "corpus_idx": int(corpus_indices[int(human_idx[np.argmin(human_dist)])]),
+            "eval_idx": int(eval_indices[h_arg]),
+            "corpus_idx": int(corpus_indices[int(human_idx[h_arg])]),
         }
         results[f"human_closest_pair_{tag}"] = human_min_pair
+
+        if not scale:
+            results["human_closest_pair_char_unscaled"] = {
+                "human": characterize_traj(human_xy[h_arg]),
+                "corpus": characterize_traj(corpus_xy[int(human_idx[h_arg])]),
+            }
+            h_coll = np.flatnonzero(human_dist < EXACT_TOL)
+            results["human_exact_collision_stats_unscaled"] = collision_stats(
+                [characterize_traj(human_xy[int(i)]) for i in h_coll])
+            print(f"  human exact collisions (<{EXACT_TOL:g}): {len(h_coll)}, "
+                  f"below 0.1px: {int(np.sum(human_dist < 0.1))}")
 
         for seed in SEEDS:
             pool_path = ROOT / f"pool_s{seed}_k16.npz"
@@ -303,6 +357,19 @@ def main() -> None:
                 "spec_idx": int(valid_specs[argmin]),
                 "corpus_idx": int(corpus_indices[int(synth_idx[argmin])]),
             }
+            if not scale:
+                results[f"synthetic_seed{seed}_closest_pair_char_unscaled"] = {
+                    "synthetic": characterize_traj(synth_xy[argmin]),
+                    "corpus": characterize_traj(
+                        corpus_xy[int(synth_idx[argmin])]),
+                }
+                s_coll = np.flatnonzero(synth_dist < EXACT_TOL)
+                results[f"synthetic_seed{seed}_exact_collision_stats_unscaled"] = (
+                    collision_stats(
+                        [characterize_traj(synth_xy[int(i)]) for i in s_coll]))
+                print(f"    seed {seed} exact collisions (<{EXACT_TOL:g}): "
+                      f"{len(s_coll)}, below 0.1px: "
+                      f"{int(np.sum(synth_dist < 0.1))}")
 
     results["elapsed_s"] = time.perf_counter() - t_start
     out_path = ROOT / "experiments" / "novelty_check_results.json"
