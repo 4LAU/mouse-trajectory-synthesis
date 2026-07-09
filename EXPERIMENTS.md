@@ -3280,3 +3280,88 @@ handing back memorized paths. Full distributions, both variants, and the
 closest single pair on each side are in
 experiments/novelty_check_results.json; the script is
 experiments/novelty_check.py.
+
+## Prior art under the same detector: SapiAgent (July 9)
+
+Every number in this journal so far compares our synthetics against humans.
+T4 asks the other obvious question: what does the published prior art score
+under the exact same judge? SapiAgent (Antal and Fejer, github.com/
+margitantal68/sapiagent) is the closest published system, a small
+convolutional autoencoder trained on the SapiMouse dataset that maps
+equidistant point sequences between real endpoints into human-like mouse
+actions. Their code ships no weights, so the model was trained from
+scratch with their own pipeline, entirely untouched: their default
+settings.py (fcn architecture, mse loss, unsupervised mode, 100 epochs,
+their fixed random seed 11235), their segmentation of raw SapiMouse
+sessions into 5,205 one-minute-session actions, their equidistant inputs,
+their generation script. Training took 16 minutes on CPU. Nothing on
+their side was tuned, and nothing on ours: the detector below is the
+identical RF-OOB block the headline uses, at the identical n=2000 per
+class.
+
+One reconstruction step sits between their output and our evaluator, and
+it needs to be stated plainly because it is a real difference between the
+methods, not an artifact of our harness. SapiAgent generates spatial
+paths only: 128 fixed steps of dx, dy displacement, no timing model of
+any kind. Our features need (x, y, t). The transform takes each
+generated action's matching real source action (their statistics CSV
+records every action's true start point, point count, and elapsed time,
+row-aligned with the generated file), trims the generated output to the
+true point count, accumulates displacements from the real start point,
+and spreads the real total elapsed time evenly across the points. Total
+duration per action is genuine; the uniform spacing inside it is
+fabricated, and real movement is anything but uniform in time, so jerk
+and acceleration features are degenerate for SapiAgent by construction.
+Our method models timing and theirs does not; that gap is part of the
+comparison, so a secondary number restricted to features that never
+touch the clock is reported alongside the main one. With constant
+per-step dt the dt terms cancel inside the curvature formula, and path
+efficiency, max deviation, and direction changes are pure geometry, so
+those five features (path_efficiency, max_deviation, curvature_mean,
+curvature_std, num_direction_changes) read only the shape SapiAgent
+actually generated.
+
+The reconstructed actions then pass through the canonical acceptance
+gates from setup_data.py. Each SapiAgent action is a single uninterrupted
+movement, so the pause split never fires and the gates reduce to the
+point-count and 20-to-5000-pixel straight-line distance checks: 5,182 of
+5,205 pass (99.6 percent), and 2,000 were sampled with seed 42. Before
+trusting anything, the script reruns the headline control through its own
+loading code: human_eval_features against the cached seed-42 picks
+returns RF-OOB 0.50948 against the published 0.5095, a delta of two parts
+in a hundred thousand, so the harness is the same one that produced the
+headline.
+
+The comparison itself is not close. SapiAgent versus our 2,000 evaluation
+humans: RF-OOB 0.996, 0.998, 0.997 across detector seeds 42, 43, 44. Our
+selected synthetics on the same judge, same humans, same n: 0.504. On the
+timing-free five-feature subset, where the fabricated clock cannot help
+the detector at all, SapiAgent still reads 0.952 to 0.957, so the
+separation is mostly real shape, not the timestamp reconstruction:
+uniform 128-step displacement curves smoothed by an autoencoder do not
+look like segmented human movements even before anyone checks the clock.
+
+Fairness cuts both ways here, so both directions are logged. In
+SapiAgent's favor: our evaluation humans come from our five-dataset mix,
+not from SapiAgent's home distribution, and July 8 established that
+cross-setup human-versus-human separability is large by itself. So the
+script also segments the raw SapiMouse sessions with the same canonical
+rule (25,981 valid movements) and scores SapiAgent against 2,000 of its
+own home-dataset humans: 0.998, worse, not better. The dataset-shift
+control (SapiMouse humans versus our evaluation humans, real recordings
+on both sides) lands at 0.919, matching the July 8 pattern, and SapiAgent
+sits clearly above even that. Against our side: SapiMouse is inside our
+generator's training pool too, so neither system saw unfamiliar data
+here, but our headline number does benefit from set-level selection out
+of candidate pools while SapiAgent's output is scored as generated, and
+SapiAgent was built to beat a different evaluation entirely, an
+aggregated ten-action anomaly detector, not a per-movement feature RF.
+Their paper never claimed the property we measure. What this entry
+establishes is narrower and still worth having on the record: under this
+project's detector, protocol, and feature set, the nearest published
+generator reads as nearly perfectly separable while ours reads at chance,
+and the margin survives removing every timing feature the reconstruction
+could have polluted. Full numbers, gate counts, and the exact
+reproduction recipe for their artifacts are in
+external_validation/sapiagent_results.json and the docstring of
+external_validation/sapiagent_comparison.py.

@@ -1,0 +1,69 @@
+{
+  "sanity_gate": {
+    "rf_oob_auc": 0.50947725,
+    "published_expected": 0.5095,
+    "delta_from_published": 2.2749999999960302e-05,
+    "within_tolerance": true,
+    "tolerance": 0.001
+  },
+  "gate_stats": {
+    "n_total_generated_actions": 5205,
+    "n_degenerate_skipped": 0,
+    "n_pass_min_points_gate": 5205,
+    "n_pass_both_gates": 5182,
+    "pass_rate": 0.995581171950048
+  },
+  "n_sapiagent_features": 2000,
+  "main_18feat": {
+    "n_class0_total": 2000,
+    "n_class1_total": 2000,
+    "n_use_per_class": 2000,
+    "rf_oob_auc_per_seed": {
+      "42": 0.9963700000000001,
+      "43": 0.99753625,
+      "44": 0.9970930000000002
+    }
+  },
+  "timing_free_subset": {
+    "n_class0_total": 2000,
+    "n_class1_total": 2000,
+    "n_use_per_class": 2000,
+    "rf_oob_auc_per_seed": {
+      "42": 0.951631375,
+      "43": 0.954692125,
+      "44": 0.9565269999999999
+    },
+    "features_used": [
+      "path_efficiency",
+      "max_deviation",
+      "curvature_mean",
+      "curvature_std",
+      "num_direction_changes"
+    ]
+  },
+  "sapimouse_only_control": {
+    "skipped": false,
+    "n_segmented_movements": 25981,
+    "n_valid_feature_rows": 25981,
+    "dataset_shift_vs_human_eval": {
+      "n_class0_total": 2000,
+      "n_class1_total": 2000,
+      "n_use_per_class": 2000,
+      "rf_oob_auc_per_seed": {
+        "42": 0.9193666249999999,
+        "43": 0.918042,
+        "44": 0.9185017499999999
+      }
+    },
+    "sapiagent_vs_sapimouse_humans": {
+      "n_class0_total": 2000,
+      "n_class1_total": 2000,
+      "n_use_per_class": 2000,
+      "rf_oob_auc_per_seed": {
+        "42": 0.998154625,
+        "43": 0.9981405,
+        "44": 0.9984498749999999
+      }
+    }
+  }
+}
