@@ -3188,3 +3188,70 @@ current floor would mean changing the generator, and that family of
 attempts stays closed for this project. Full per-seed coefficients,
 group-ablation numbers, and the tail-ratio figures are in
 experiments/residual_analysis_results.json.
+
+## Are the picks copies? A nearest-neighbor novelty check (July 9)
+
+A number this close to chance invites the laziest possible objection: maybe
+the model just memorized 4.16 million training paths and the selection
+step is quietly handing back near-copies, so of course a detector cannot
+tell them apart. That objection is checkable directly, in raw pixel space,
+without touching a single kinematic feature, so today went to settling it.
+
+The design is a nearest-neighbor distance check. Every headline-selected
+synthetic movement (seed 42, plus 43 and 44 for confirmation) is resampled
+to 64 points by arc length and translated so it starts at the origin, then
+compared by Euclidean distance to a training corpus built the same way.
+The corpus is 200,000 trajectories sampled uniformly at random from the
+full 4.16-million-trajectory pool the model actually trained on, held in
+training/pool_flat_i16.npy and friends. The control does the identical
+search for the 2,000 held-out human evaluation movements, the same class
+the headline detector reads, against the same corpus sample. If the
+generator were copying, synthetic-to-corpus distances would sit near zero,
+tighter than real recordings ever sit next to each other. If they land in
+the same range as the human control, or wider, there is nothing here to
+copy from.
+
+Two things had to be nailed down before trusting a single number. First,
+the held-out human sample is not stored as raw coordinates anywhere, only
+as pre-extracted features, so the script rebuilds it from the pool with
+the exact recipe in regenerate_human_features.py (np.random.default_rng(42),
+2,000 indices out of 4,159,900, no replacement) and checks the recomputed
+18 features against the cached data/human_eval_features.npy. They matched
+to six decimal places, so the raw trajectories used below are provably the
+same 2,000 movements the headline scores against. Second, those same 2,000
+indices are excluded from the 200,000-trajectory corpus sample, so the
+human side of the comparison can never trivially match itself. As a
+pipeline check, ten trajectories already inside the corpus were queried
+against the corpus that contains them; all ten came back at distance zero
+against their own row, which is the whole check working correctly rather
+than something to read meaning into.
+
+The numbers, RMS pixels per resampled point, seed 42 picks against the
+shared corpus:
+
+| | median | p1 | p99 | frac below 1px |
+|---|---|---|---|---|
+| human eval vs corpus | 4.80 | 0.00 | 143.47 | 16.3% |
+| synthetic (seed 42) vs corpus | 5.18 | 0.19 | 206.50 | 14.1% |
+| synthetic (seed 43) vs corpus | 5.43 | 0.21 | 162.57 | 14.3% |
+| synthetic (seed 44) vs corpus | 5.33 | 0.23 | 188.79 | 13.7% |
+
+Synthetic distances run slightly higher than human at the median and at
+the tail on all three seeds, not lower. The human side even has its own
+exact-zero match against the corpus (a real recording elsewhere in the
+pool with an identical resampled shape once translated to a shared
+origin), and the fraction of near-duplicates under one pixel is a touch
+lower for synthetics than for real humans at every seed, 13.7 to 14.3
+percent against 16.3 percent. None of the 2,000 synthetic picks, at any
+seed, land closer to the corpus than the first percentile of the human
+control (0.0 out of 2,000 in every case). A scale-normalized variant,
+each path divided by its own resampled span before comparison, tells the
+same story and is logged alongside the raw-pixel numbers.
+
+One-sentence verdict: the selected synthetic movements sit at least as far
+from their nearest training neighbor as real held-out human movements sit
+from theirs, so the headline result is not an artifact of the generator
+handing back memorized paths. Full distributions, both variants, and the
+closest single pair on each side are in
+experiments/novelty_check_results.json; the script is
+experiments/novelty_check.py.
