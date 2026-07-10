@@ -74,6 +74,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
+import torch.utils.checkpoint as torch_checkpoint
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import roc_auc_score
 
@@ -408,6 +409,47 @@ def rollout_no_grad(model, cond, feat, seq_len, n_steps, temperature,
 
 
 # ---------------------------------------------------------------------------
+# Checkpointed trunk forward: line-for-line the same computation as
+# EventStreamPolarModel.trunk() (models/event_stream_polar.py, not edited in
+# place for the same reason rollout_no_grad is a copy -- see the module
+# docstring), except each CANDIBlock layer runs under
+# torch.utils.checkpoint instead of being called directly. Checkpointing
+# discards each layer's intermediate activations right after computing its
+# output and RECOMPUTES that one layer's forward during backward instead of
+# keeping it resident; it changes nothing about the arithmetic (verified
+# bit-identical against model.trunk() under no_grad, same inputs), only when
+# each layer's activations exist in memory.
+#
+# This is the actual fix for the 1000+s/iter replay wall, not a batching
+# trick: profiling (scratch_mem_layers.py during this optimization pass)
+# showed the un-checkpointed grad-enabled trunk forward alone -- ONE replay
+# step, before the reference-model pass or backward -- holds ~9.2 GB on this
+# 8 GB 4070, i.e. every single replay step was already overflowing physical
+# VRAM and silently spilling into WDDM's shared system-memory fallback (CUDA
+# does not hard-OOM on Windows in that case, it just runs at PCIe speed
+# instead of VRAM speed, which is consistent with the observed ~11s/step).
+# Per-layer checkpointing cuts the peak to ~2.3 GB for the same step, which
+# comfortably fits alongside the frozen reference model's no-grad forward
+# (no graph, no retained activations, already cheap) with headroom to spare.
+# ---------------------------------------------------------------------------
+def checkpointed_trunk(model, dt_noisy, s_tok, th_tok, t, cond, feat):
+    B, T = dt_noisy.shape
+    x = (
+        model.dt_proj(dt_noisy.unsqueeze(-1))
+        + model.s_embed(s_tok)
+        + model.th_embed(th_tok)
+        + model.pos_embed(torch.arange(T, device=dt_noisy.device))
+    )
+    t_emb = model.time_embed(t)
+    combined = t_emb + model.cond_embed(cond)
+    if model.feat_embed is not None and feat is not None:
+        combined = combined + model.feat_embed(feat)
+    for layer in model.layers:
+        x = torch_checkpoint.checkpoint(layer, x, combined, use_reentrant=False)
+    return model.norm(x)
+
+
+# ---------------------------------------------------------------------------
 # GRPO pass 2: replay each recorded reveal step's forward WITH grad, compute
 # that step's contribution to the total loss, and backward() it immediately
 # so the graph is freed per step -- at no point does the backward have to
@@ -430,19 +472,32 @@ def rollout_no_grad(model, cond, feat, seq_len, n_steps, temperature,
 # never enter any replayed quantity. The recomputed logp is asserted against
 # pass 1's recorded value for the first few steps (same weights, eval mode,
 # same inputs -> equal to float tolerance).
+#
+# The policy trunk forward runs through checkpointed_trunk (see above) --
+# the only change from the original per-step loop is HOW that forward's
+# memory is managed, not what it computes; the per-step accumulation
+# (Python float += pg_part.item()) is left exactly as it was so the printed
+# pg/kl aggregates stay bit-for-bit reproducible against the pre-change
+# code, not just close. --amp (default off) additionally wraps both the
+# policy and reference forwards in bf16 autocast for a further speed lever;
+# it is the only thing in this function that can move replay-logp-err off
+# exactly 0.0 (autocast changes matmul precision), so it defaults OFF and
+# every other change here is exact.
 # ---------------------------------------------------------------------------
 def replay_backward(model, ref_model, rollout, cond, feat, adv_w, inv_n,
                      n_valid, beta, temperature, th_temperature, device,
-                     assert_first_k=3):
+                     assert_first_k=3, amp=False):
     temp = max(temperature, 1e-4)
     th_temp = max(th_temperature if th_temperature is not None else temperature, 1e-4)
     final_s, final_th = rollout["final_s"], rollout["final_th"]
     B, T = final_s.shape
     revealed_before = torch.zeros(B, T, dtype=torch.bool, device=device)
     total_pg, total_kl, max_logp_err = 0.0, 0.0, 0.0
+    amp_enabled = amp and device.type == "cuda"
 
     motion_all = (final_s > TICK_CLASS) & (final_s < S_PAD_CLASS)
     th_gather = final_th.clamp(max=TH_BINS - 1)
+    final_s_clamped = final_s.clamp(max=N_S_CLASSES - 1)
 
     for si, rec in enumerate(rollout["steps"]):
         reveal = rec["reveal"]
@@ -451,16 +506,19 @@ def replay_backward(model, ref_model, rollout, cond, feat, adv_w, inv_n,
         th_in = torch.where(revealed_before, final_th,
                             torch.full_like(final_th, TH_MASK_TOKEN))
         t_scaled = torch.full((B,), rec["t_scaled"], device=device)
-
-        x_feat = model.trunk(rec["dt_in"], s_in, th_in, t_scaled, cond, feat)
-        s_logits = model.s_head(x_feat)
         # position-local th conditioning: at revealed positions the sampled
         # speed class is final_s; other positions are never gathered.
         s_cond_tok = torch.where(reveal, final_s, s_in).clamp(max=N_S_CLASSES - 1)
-        th_l = model.th_logits(x_feat, s_cond_tok)
+
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=amp_enabled):
+            x_feat = checkpointed_trunk(model, rec["dt_in"], s_in, th_in, t_scaled, cond, feat)
+            s_logits = model.s_head(x_feat)
+            th_l = model.th_logits(x_feat, s_cond_tok)
+        s_logits = s_logits.float()
+        th_l = th_l.float()
 
         logp_s = F.log_softmax(s_logits / temp, dim=-1).gather(
-            -1, final_s.clamp(max=N_S_CLASSES - 1).unsqueeze(-1)).squeeze(-1)
+            -1, final_s_clamped.unsqueeze(-1)).squeeze(-1)
         logp_th = F.log_softmax(th_l / th_temp, dim=-1).gather(
             -1, th_gather.unsqueeze(-1)).squeeze(-1)
         logp_tok = logp_s + motion_all.float() * logp_th
@@ -476,10 +534,11 @@ def replay_backward(model, ref_model, rollout, cond, feat, adv_w, inv_n,
 
         # KL(policy || frozen reference), full categorical, at temperature=1
         # (the anchor measures actual weight drift, not the decoding knob).
-        with torch.no_grad():
+        with torch.no_grad(), torch.autocast(
+                device_type="cuda", dtype=torch.bfloat16, enabled=amp_enabled):
             ref_x = ref_model.trunk(rec["dt_in"], s_in, th_in, t_scaled, cond, feat)
-            ref_logq_s = F.log_softmax(ref_model.s_head(ref_x), dim=-1)
-            ref_logq_th = F.log_softmax(ref_model.th_logits(ref_x, s_cond_tok), dim=-1)
+            ref_logq_s = F.log_softmax(ref_model.s_head(ref_x).float(), dim=-1)
+            ref_logq_th = F.log_softmax(ref_model.th_logits(ref_x, s_cond_tok).float(), dim=-1)
         logp_s_raw = F.log_softmax(s_logits, dim=-1)
         kl_s = (logp_s_raw.exp() * (logp_s_raw - ref_logq_s)).sum(-1)
         logp_th_raw = F.log_softmax(th_l, dim=-1)
@@ -832,7 +891,8 @@ def train(args):
         optimizer.zero_grad()
         loss_pg, loss_kl, logp_err = replay_backward(
             model, ref_model, rollout, cond, feat, adv_w, inv_n, n_valid,
-            args.beta, args.temperature, args.th_temperature, device)
+            args.beta, args.temperature, args.th_temperature, device,
+            amp=args.amp)
         grad_norm = torch.nn.utils.clip_grad_norm_(g_params, args.clip_grad)
         optimizer.step()
         del rollout
@@ -973,6 +1033,13 @@ def build_parser():
     p.add_argument("--eval-n-small", type=int, default=500)
     p.add_argument("--eval-n-big", type=int, default=2000)
     p.add_argument("--clip-grad", type=float, default=1.0)
+    p.add_argument("--amp", action="store_true",
+                   help="bf16 autocast on the pass-2 replay forward (policy + "
+                        "frozen reference), opt-in and OFF by default: it is "
+                        "the only lever in this file that can move "
+                        "replay-logp-err off exactly 0.0. Checkpointed replay "
+                        "(always on, exact) already gets the real 32x8x100 "
+                        "config to the speed target without it.")
     p.add_argument("--reward-clip", type=float, default=4.0)
     p.add_argument("--rf-trees", type=int, default=100)
     p.add_argument("--auto-stop-patience", type=int, default=3,
