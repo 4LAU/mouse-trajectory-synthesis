@@ -590,16 +590,71 @@ def generate_features(model, cfg, dt_mean, dt_std, duration_model, human_distanc
     return np.asarray(feats)
 
 
-def fit_reward_rf(gen_kwargs, human_ref, n, n_trees, seed, min_valid=20):
+# ---------------------------------------------------------------------------
+# Replay buffer: a capped ring buffer of past iterations' valid rollout
+# feature rows, mixed into each RF refit alongside the fresh refresh_n draw
+# so a refit is never made from a single newest batch alone (the batch right
+# after a policy update is the one most likely to have drifted toward
+# whatever the frozen RF currently rewards). cap<=0 disables it entirely --
+# every method below is then a no-op and fit_reward_rf falls back to the
+# pre-change fresh-samples-only behavior.
+# ---------------------------------------------------------------------------
+class ReplayBuffer:
+    def __init__(self, cap, dim):
+        self.cap = cap
+        self.dim = dim
+        self.buf = np.zeros((cap, dim), dtype=np.float32) if cap > 0 else None
+        self.count = 0
+        self.ptr = 0
+
+    def add(self, rows):
+        if self.cap <= 0 or len(rows) == 0:
+            return
+        for row in np.asarray(rows, dtype=np.float32):
+            self.buf[self.ptr] = row
+            self.ptr = (self.ptr + 1) % self.cap
+            self.count = min(self.count + 1, self.cap)
+
+    def sample(self, k, rng):
+        if self.cap <= 0 or self.count == 0 or k <= 0:
+            return np.zeros((0, self.dim), dtype=np.float32)
+        idx = rng.choice(self.count, size=min(k, self.count), replace=False)
+        return self.buf[idx]
+
+    def valid_rows(self):
+        if self.cap <= 0 or self.count == 0:
+            return np.zeros((0, self.dim), dtype=np.float32)
+        return self.buf[:self.count].copy()
+
+    def restore(self, rows):
+        if self.cap <= 0 or rows is None or len(rows) == 0:
+            return
+        k = min(len(rows), self.cap)
+        self.buf[:k] = rows[-k:]
+        self.count = k
+        self.ptr = k % self.cap
+
+
+def fit_reward_rf(gen_kwargs, human_ref, n, n_trees, seed, replay_buf=None, min_valid=20):
     X_synth = generate_features(n=n, **gen_kwargs)
-    n_use = min(len(X_synth), len(human_ref))
-    if n_use < max(min_valid, n * 0.2):
-        return None, len(X_synth)
-    X = np.vstack([human_ref[:n_use], X_synth[:n_use]])
-    y = np.concatenate([np.zeros(n_use), np.ones(n_use)])
-    rf = RandomForestClassifier(n_estimators=n_trees, n_jobs=-1, random_state=seed)
+    if len(X_synth) < max(min_valid, n * 0.2):
+        return None, len(X_synth), 0
+    X_synth_all = X_synth
+    n_buf = 0
+    if replay_buf is not None:
+        buf_rows = replay_buf.sample(n, np.random.default_rng(seed))
+        n_buf = len(buf_rows)
+        if n_buf:
+            X_synth_all = np.vstack([X_synth, buf_rows])
+    # human class stays the full reward_human_ref, untrimmed -- synth can now
+    # be up to 2x that (fresh + replay), so class_weight rebalances the RF
+    # rather than throwing away human or synth rows to match counts.
+    X = np.vstack([human_ref, X_synth_all])
+    y = np.concatenate([np.zeros(len(human_ref)), np.ones(len(X_synth_all))])
+    rf = RandomForestClassifier(n_estimators=n_trees, n_jobs=-1, random_state=seed,
+                                class_weight="balanced")
     rf.fit(X, y)
-    return rf, len(X_synth)
+    return rf, len(X_synth), n_buf
 
 
 def rf_reward(rf, X, clip=4.0):
@@ -711,6 +766,16 @@ def train(args):
     human_distances = np.load(data_dir / "human_distances.npy")
     duration_model = DurationModel(data_dir, std_mult=args.dur_std)
     reward_human_ref = np.load(args.reward_human_ref)
+
+    # Tail-penalty anchors (the same std_jerk/curvature_std canaries run_eval
+    # tracks): human p99, recomputed fresh every run -- NOT checkpointed,
+    # since reward_human_ref never changes mid-run so there is nothing to
+    # preserve across --resume.
+    h99_std_jerk = float(np.percentile(reward_human_ref[:, STD_JERK_IDX], 99))
+    h99_curvature_std = float(np.percentile(reward_human_ref[:, CURVATURE_STD_IDX], 99))
+
+    replay_buf = ReplayBuffer(args.replay_cap, dim=reward_human_ref.shape[1])
+
     val_human_pool = build_val_human_features(
         Path(args.train_pool_dir), Path(args.val_human_cache),
         reward_human_ref, args.val_n, args.val_seed)
@@ -720,8 +785,10 @@ def train(args):
     print(f"[grpo] reward-RF human ref: {len(reward_human_ref)} rows "
           f"({args.reward_human_ref}); VALIDATION humans for all in-training "
           f"evals/selection/auto-stop: {len(val_human_pool)} rows "
-          f"({args.val_human_cache}). Eval humans are NOT used by this trainer.",
-          flush=True)
+          f"({args.val_human_cache}). Eval humans are NOT used by this trainer. "
+          f"tail-penalty anchors (p99): std_jerk {h99_std_jerk:.3f} "
+          f"curvature_std {h99_curvature_std:.3f} | replay buffer cap "
+          f"{args.replay_cap}", flush=True)
 
     gen_kwargs = dict(
         model=model, cfg=cfg, dt_mean=dt_mean, dt_std=dt_std,
@@ -758,12 +825,17 @@ def train(args):
         iter0_tail_sj = rck.get("iter0_tail_std_jerk")
         iter0_tail_cv = rck.get("iter0_tail_curvature_std")
         bad_big_evals = rck.get("bad_big_evals", 0)
+        replay_buf.restore(rck.get("replay_buffer", None))
         print(f"[grpo] resumed at iter {start_iter} (best_auc="
               f"{best_auc if best_auc is not None else 'n/a'}, iter0_auc="
               f"{iter0_auc if iter0_auc is not None else 'n/a'}, "
               f"bad_big_evals={bad_big_evals}, reward_rf "
               f"{'present' if reward_rf is not None else 'MISSING, will refit'})",
               flush=True)
+        if replay_buf.count > 0:
+            print(f"[grpo] restored replay buffer: {replay_buf.count} rows", flush=True)
+        else:
+            print("[grpo] restored replay buffer: empty", flush=True)
 
     def maybe_checkpoint(it):
         atomic_save({
@@ -775,6 +847,7 @@ def train(args):
             "feat_bank_log_dist": ckpt.get("feat_bank_log_dist"),
             "grpo_iter": it, "reward_rf": reward_rf,
             "reward_rf_refresh_iter": last_refresh_iter,
+            "replay_buffer": replay_buf.valid_rows(),
             "best_auc": best_auc, "iter0_auc": iter0_auc,
             "iter0_tail_std_jerk": iter0_tail_sj,
             "iter0_tail_curvature_std": iter0_tail_cv,
@@ -810,9 +883,9 @@ def train(args):
         # --- reward RF refresh (frozen between windows) ---
         if reward_rf is None or (it - max(last_refresh_iter, 0)) >= refresh_every:
             rf_t0 = time.time()
-            new_rf, n_valid_rf = fit_reward_rf(
+            new_rf, n_valid_rf, n_buf_rf = fit_reward_rf(
                 gen_kwargs, reward_human_ref, refresh_n, args.rf_trees,
-                args.seed + it, min_valid=min_valid_refresh)
+                args.seed + it, replay_buf=replay_buf, min_valid=min_valid_refresh)
             last_refresh_iter = it
             if new_rf is None:
                 print(f"[grpo] iter {it}: reward-RF refresh got too few valid "
@@ -822,7 +895,8 @@ def train(args):
                 reward_rf = new_rf
                 print(f"[grpo] iter {it}: refreshed reward RF on {n_valid_rf} fresh "
                       f"samples vs {len(reward_human_ref)} training-pool humans "
-                      f"({time.time() - rf_t0:.1f}s)", flush=True)
+                      f"+ {n_buf_rf} replay rows ({time.time() - rf_t0:.1f}s)",
+                      flush=True)
 
         # --- pass 1: no-grad rollout of G trajectories per spec ---
         it_t0 = time.time()
@@ -858,6 +932,10 @@ def train(args):
             feats.append(f)
             valid_idx.append((i, max(n_real, 1)))
 
+        replay_buf.add(feats)  # every iteration, valid or not, feeds the
+        #                        buffer -- it is a source of refit diversity,
+        #                        independent of whether THIS update runs
+
         if len(valid_idx) < 0.5 * B or reward_rf is None:
             print(f"  iter {it + 1:4d}/{args.iters} | too few valid trajectories "
                   f"({len(valid_idx)}/{B}) or no reward RF yet, skipping update "
@@ -868,6 +946,26 @@ def train(args):
         # --- reward + per-group z-scored advantage ---
         X_synth = np.asarray(feats)
         rewards = rf_reward(reward_rf, X_synth, clip=args.reward_clip)
+
+        # one-sided per-sample tail penalty: pulls down samples whose
+        # std_jerk / curvature_std exceed the human p99, subtracted INSIDE
+        # the reward (before the group-relative advantage normalization
+        # below) so it survives that normalization -- a batch-constant
+        # penalty would be nulled by the group-mean subtraction, but this one
+        # depends on each sample's own features and so differentiates within
+        # a group. Not re-clipped: the RF term above is already clipped, and
+        # this term is allowed to push a sample's reward below -reward_clip.
+        if args.tail_penalty > 0:
+            sj, cv = X_synth[:, STD_JERK_IDX], X_synth[:, CURVATURE_STD_IDX]
+            pen_sj = np.where(sj > 0, np.maximum(0.0, np.log(
+                np.maximum(sj, 1e-12) / max(h99_std_jerk, 1e-9))), 0.0)
+            pen_cv = np.where(cv > 0, np.maximum(0.0, np.log(
+                np.maximum(cv, 1e-12) / max(h99_curvature_std, 1e-9))), 0.0)
+            tail_pen = args.tail_penalty * (pen_sj + pen_cv)
+            rewards = rewards - tail_pen
+        else:
+            tail_pen = np.zeros(len(X_synth))
+
         advantages = np.zeros(len(valid_idx))
         by_group = {}
         for k, (i, _) in enumerate(valid_idx):
@@ -898,8 +996,10 @@ def train(args):
         del rollout
 
         iter_time = time.time() - it_t0
+        tailpen_frac = float((tail_pen > 0).mean()) if len(tail_pen) else 0.0
         print(f"  iter {it + 1:4d}/{args.iters} | loss {loss_pg + loss_kl:+.4f} "
               f"(pg {loss_pg:+.4f} kl {loss_kl:.4f}) | reward {rewards.mean():+.3f} | "
+              f"tailpen {tail_pen.mean():.3f} ({tailpen_frac * 100:.1f}%) | "
               f"valid {n_valid}/{B} | grad {grad_norm:.3f} | replay-logp-err "
               f"{logp_err:.2e} | gen {gen_time:.1f}s total {iter_time:.1f}s",
               flush=True)
@@ -1042,6 +1142,16 @@ def build_parser():
                         "config to the speed target without it.")
     p.add_argument("--reward-clip", type=float, default=4.0)
     p.add_argument("--rf-trees", type=int, default=100)
+    p.add_argument("--replay-cap", type=int, default=20000,
+                   help="ring-buffer capacity of past iterations' valid "
+                        "rollout feature rows, mixed into each RF refit "
+                        "alongside the fresh refresh_n draw; 0 disables the "
+                        "buffer (fresh-samples-only refit, prior behavior)")
+    p.add_argument("--tail-penalty", type=float, default=2.0,
+                   help="one-sided per-sample penalty coefficient on "
+                        "std_jerk/curvature_std exceeding their human p99 "
+                        "(log-ratio, subtracted from reward before the "
+                        "group-relative advantage normalization); 0 disables")
     p.add_argument("--auto-stop-patience", type=int, default=3,
                    help="consecutive bad BIG evals before auto-stop")
     p.add_argument("--resume", action="store_true")
