@@ -773,6 +773,7 @@ def train(args):
     # preserve across --resume.
     h99_std_jerk = float(np.percentile(reward_human_ref[:, STD_JERK_IDX], 99))
     h99_curvature_std = float(np.percentile(reward_human_ref[:, CURVATURE_STD_IDX], 99))
+    h50_curvature_std = float(np.percentile(reward_human_ref[:, CURVATURE_STD_IDX], 50))
 
     replay_buf = ReplayBuffer(args.replay_cap, dim=reward_human_ref.shape[1])
 
@@ -787,7 +788,8 @@ def train(args):
           f"evals/selection/auto-stop: {len(val_human_pool)} rows "
           f"({args.val_human_cache}). Eval humans are NOT used by this trainer. "
           f"tail-penalty anchors (p99): std_jerk {h99_std_jerk:.3f} "
-          f"curvature_std {h99_curvature_std:.3f} | replay buffer cap "
+          f"curvature_std {h99_curvature_std:.3f} | curv-floor anchor (p50): "
+          f"curvature_std {h50_curvature_std:.3f} | replay buffer cap "
           f"{args.replay_cap}", flush=True)
 
     gen_kwargs = dict(
@@ -966,6 +968,22 @@ def train(args):
         else:
             tail_pen = np.zeros(len(X_synth))
 
+        # per-sample undershoot brake on curvature_std: pushes samples whose
+        # curvature_std falls BELOW the human median back up, subtracted
+        # INSIDE the reward for the same group-normalization reason as
+        # tail_pen above. Deliberately NOT gated on cv > 0 like pen_sj/pen_cv
+        # above -- cv == 0 (a fully degenerate, zero-curvature trajectory) is
+        # the worst undershoot case and must get the full clipped penalty,
+        # not a free pass. std_jerk is left alone here (0.822 of human p99,
+        # already healthy, and already covered by the overshoot hinge above).
+        if args.curv_floor_penalty > 0:
+            cv = X_synth[:, CURVATURE_STD_IDX]
+            curv_floor_pen = args.curv_floor_penalty * np.clip(np.maximum(
+                0.0, np.log(h50_curvature_std / np.maximum(cv, 1e-12))), 0.0, 3.0)
+            rewards = rewards - curv_floor_pen
+        else:
+            curv_floor_pen = np.zeros(len(X_synth))
+
         advantages = np.zeros(len(valid_idx))
         by_group = {}
         for k, (i, _) in enumerate(valid_idx):
@@ -1000,6 +1018,7 @@ def train(args):
         print(f"  iter {it + 1:4d}/{args.iters} | loss {loss_pg + loss_kl:+.4f} "
               f"(pg {loss_pg:+.4f} kl {loss_kl:.4f}) | reward {rewards.mean():+.3f} | "
               f"tailpen {tail_pen.mean():.3f} ({tailpen_frac * 100:.1f}%) | "
+              f"curvpen {curv_floor_pen.mean():.3f} | "
               f"valid {n_valid}/{B} | grad {grad_norm:.3f} | replay-logp-err "
               f"{logp_err:.2e} | gen {gen_time:.1f}s total {iter_time:.1f}s",
               flush=True)
@@ -1151,6 +1170,11 @@ def build_parser():
                    help="one-sided per-sample penalty coefficient on "
                         "std_jerk/curvature_std exceeding their human p99 "
                         "(log-ratio, subtracted from reward before the "
+                        "group-relative advantage normalization); 0 disables")
+    p.add_argument("--curv-floor-penalty", type=float, default=3.0,
+                   help="one-sided per-sample penalty coefficient pushing "
+                        "curvature_std UP toward the human median (log-ratio, "
+                        "clipped at 3.0, subtracted from reward before the "
                         "group-relative advantage normalization); 0 disables")
     p.add_argument("--auto-stop-patience", type=int, default=3,
                    help="consecutive bad BIG evals before auto-stop")
