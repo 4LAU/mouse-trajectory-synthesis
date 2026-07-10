@@ -3365,3 +3365,134 @@ could have polluted. Full numbers, gate counts, and the exact
 reproduction recipe for their artifacts are in
 external_validation/sapiagent_results.json and the docstring of
 external_validation/sapiagent_comparison.py.
+
+## Headline statistics, and the first two honest out-of-sample seeds (July 8-9)
+
+T2 has two halves that belong in one entry because the second only means
+something in light of the first. The first half, committed July 8, put
+confidence intervals around the three published headline seeds. The
+second half, run today, is the first test of the config against seeds
+that were not in the room when the config was chosen.
+
+The July 8 half started from a plain question: the headline is a single
+RF-OOB number per seed, 0.5095 / 0.5030 / 0.4993 for seeds 42/43/44, and a
+single point estimate says nothing about how much of that gap from 0.50
+is noise. external_validation/headline_statistics.py refits the exact RF-OOB
+classifier evaluate.py uses, then runs three checks per seed: a sanity
+refit against the published number, a percentile bootstrap over the OOB
+scores (10,000 resamples), and a sweep of 20 detector random seeds
+(1000-1019) with the data held fixed, to see how much the AUC moves from
+tree-randomness alone. Every seed's bootstrap interval covers 0.50:
+
+| seed | RF OOB (sanity refit) | bootstrap 95% CI | covers 0.50 | detector-seed sweep mean +/- SD |
+|---|---|---|---|---|
+| 42 | 0.5095 | [0.4915, 0.5279] | yes | 0.5032 +/- 0.0054 |
+| 43 | 0.5030 | [0.4852, 0.5208] | yes | 0.5015 +/- 0.0082 |
+| 44 | 0.4993 | [0.4817, 0.5171] | yes | 0.4956 +/- 0.0079 |
+
+The three-seed mean is 0.5039, and every sweep mean sits within about half
+a bootstrap standard deviation of 0.50. Read together, the headline's
+distance from chance is comfortably inside the noise the method itself
+generates, at both the sampling level and the detector-training level.
+
+A number this close to 0.50 is only informative if the same pipeline can
+still detect a real gap when one exists, so the script runs one power
+control: AdSERP external humans (see the July 8 external-validation entry)
+against seed 42's selected synthetics. That reads 0.9479, bootstrap CI
+[0.9414, 0.9541], sweep mean 0.9490 +/- 0.0011. The interval does not come
+near 0.50, and the sweep's spread is five to seven times tighter than the
+headline sweeps above. The same code that reports chance on the headline
+reports a wide, precise, unmistakable gap here, so chance is a property of
+the comparison and not a blind spot in the harness.
+
+The second half is today's. Seeds 42, 43, and 44 were live while
+f20d85_r30_rf (the 33-feature RF judge, trust-region width 20, 30 rounds)
+was being chosen, so no result on those three seeds is fully out of
+sample. Seeds 45 and 46 ran the identical protected protocol end to end
+for the first time since the config was locked: a fresh GPU pool build
+(K=16 SIR candidates, 2,000 specs per seed), the offline 33-dim trust
+loop (trust33.py) picking candidates against the same judge, and an
+honest replay through evaluate.py's full detector suite, with the human
+class the same untouched evaluation sample used throughout. Recipe B,
+f20d85_r30_rf, all five seeds:
+
+| seed | RF OOB | RF 5-fold | GBM 5-fold | Raw-NN |
+|---|---|---|---|---|
+| 42 | 0.5095 | 0.5030 | 0.5171 | 0.5010 |
+| 43 | 0.5030 | 0.4987 | 0.5153 | 0.5230 |
+| 44 | 0.4993 | 0.4877 | 0.5088 | 0.5039 |
+| 45 | 0.5148 | 0.5020 | 0.5211 | 0.5033 |
+| 46 | 0.5190 | 0.5094 | 0.5189 | 0.5077 |
+| mean, seeds 42-44 | 0.5039 | 0.4965 | 0.5137 | 0.5093 |
+| mean, seeds 42-46 | 0.5091 | 0.5002 | 0.5162 | 0.5078 |
+
+Both new seeds land above chance on the primary detector, and above the
+three-seed mean. The five-seed RF-OOB mean is 0.5091 with a standard
+deviation of 0.0081 across seeds. Running the same statistics script
+(a small wrapper that imports its fitting and bootstrap code unchanged
+rather than editing the committed file, since it hardcodes seeds 42-44
+with no seed flag) against seeds 45 and 46 first reproduces the honest
+replay numbers to five decimal places (deltas of 0.0000085 and 0.0000268
+against 0.5148 and 0.5190), then extends the same two checks:
+
+| seed | bootstrap 95% CI | covers 0.50 | detector-seed sweep mean +/- SD |
+|---|---|---|---|
+| 45 | [0.4968, 0.5326] | yes | 0.5094 +/- 0.0065 |
+| 46 | [0.5007, 0.5368] | no | 0.5084 +/- 0.0075 |
+
+Seed 46 is the first individual seed in this project whose bootstrap
+interval does not cover 0.50. It is a narrow miss, 0.50 sits less than a tenth of an
+AUC point below the interval's lower edge, and the
+detector-seed sweep for that seed still ranges down to 0.4929, so this is
+not a case of a method suddenly reading a large gap. But it is a
+different outcome than every seed before it, and it should be named
+rather than smoothed over.
+
+The same two pools also ran through recipe A, the alternative 18-feature
+judge, using tune_trust.py's picks instead of trust33.py's:
+
+| seed | RF OOB (recipe A) |
+|---|---|
+| 42 | 0.4892 |
+| 43 | 0.4922 |
+| 44 | 0.4907 |
+| 45 | 0.4864 |
+| 46 | 0.4822 |
+| mean, seeds 42-44 | 0.4907 |
+| mean, seeds 42-46 | 0.4881 |
+
+Recipe A moves the other way on the same two new pools, further below
+chance than its own three-seed mean. Two judges, same pools, same
+seeds, drifting in opposite directions from their published means is the
+clearest evidence available that whatever residual survives selection is
+small and judge-dependent rather than a stable one-to-two-point real
+effect in a fixed direction. Recipe B drifts up by about 1.3
+points on average across the two new seeds; recipe A drifts down by about
+0.6 points. Both drifts sit inside the per-seed bootstrap half-widths
+(about 1.8 points), though the recipe B drift is larger than the
+detector-seed sweep spread (0.005 to 0.008), and
+the direction is consistent within each recipe across both new seeds,
+which is what makes this read as mild selection overfitting rather than
+pure noise: seeds 42-44 were, unavoidably, seen while f20d85_r30_rf was
+being picked, and the config that came out of that process favors those
+seeds a little on recipe B.
+
+The decision this project pre-registered for exactly this situation was
+to report the drift honestly and keep the headline at the three-seed
+number. That is what happens here. The published headline stays 0.504,
+three seeds, recipe B, with this entry as the disclosure that the first
+two fully out-of-sample seeds read at 0.5148 and 0.5190, a five-seed mean
+of 0.5091, and one of the two individual seeds no longer has a bootstrap
+interval covering chance. The honest reading is that this project's
+selection process is not perfectly seed-invariant. It is invariant enough
+that a different judge on the same new data moves the opposite direction
+by a comparable amount, and every number involved, three-seed, five-seed,
+recipe A, and recipe B alike, sits within one or two AUC points of 0.50
+either side. But "at chance" was always a claim about the three seeds it
+was measured on, and it is worth being exact about which seeds that is.
+
+Full per-seed sanity, sweep, and bootstrap output for seeds 45 and 46 is
+in external_validation/headline_statistics_45_46.json, produced by
+external_validation/headline_statistics_45_46.py. The July 8 three-seed
+numbers are unchanged, in external_validation/headline_statistics.json,
+produced by external_validation/headline_statistics.py.
