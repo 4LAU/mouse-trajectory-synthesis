@@ -1,0 +1,1008 @@
+"""Stage 2d (pilot): trajectory-level GRPO fine-tune of the WS7b polar model.
+
+Why this and not another critic/DPO pass: three independent gradient-based
+fine-tunes already died on the same wall (EXPERIMENTS.md, July 4-6). Plain
+adversarial (train_events_polar_adv.py) and conditioning-aware adversarial
+(train_events_polar_advfc.py) both showed the critic finding a real,
+growing gap that the generator's per-position heads could never close --
+"the gap is a global per-trajectory property... per-position token heads
+cannot coordinate global outcomes" (July 5). Preference learning (DPO)
+avoided the straight-through Gumbel path but collapsed off-manifold instead:
+pure-model RF OOB rose monotonically from the 0.6470 control to 0.9782 by
+step 1500, textbook Goodhart -- the judge's ranking signal is real but only
+usable as a selection-time filter, never as a training gradient into this
+architecture (July 6, 18:25).
+
+GRPO sidesteps both failure modes structurally, not just by tuning knobs:
+  - No straight-through estimator, ever. A trajectory is sampled with the
+    EXACT eval-time MaskGIT/Gumbel-reveal procedure in a fully no-grad
+    rollout pass (rollout_no_grad below, copied from
+    EventStreamPolarModel.sample() because that method is @torch.no_grad
+    and cannot be edited in place). Rewards and per-group advantages are
+    computed on the decoded trajectories. Only then does a REPLAY pass
+    (replay_backward) rerun each recorded reveal step's forward with grad,
+    compute that step's contribution to the REINFORCE + KL loss, and call
+    backward() immediately so no more than ONE step's graph is ever alive.
+    The gradient never crosses a sampling operation or a time step; it only
+    flows through each step's own logits into the log-prob of the token
+    that step already committed to (a pure score-function estimator). This
+    is what "coordinates whole-trajectory outcomes": the trajectory-level
+    reward is broadcast, via the advantage, onto the log-prob of every
+    token that trajectory contains, so a single global judgment CAN move
+    every position's weights in the same direction -- the exact capability
+    the adversarial critics lacked.
+  - The reward RF is refit only every --refresh-every iterations and frozen
+    in between (a moving but intermittently-static target, not a live
+    adversary), and every update carries a per-token KL penalty against a
+    FROZEN copy of the pretrained model. Both are direct guards against the
+    DPO collapse: nothing here differentiates through the judge, and the KL
+    leash is the anchor DPO's reference-model term was supposed to provide
+    but couldn't stop in weight space.
+
+Honest-split protocol: ALL in-training evals, best-checkpoint selection,
+and auto-stop use a VALIDATION human sample drawn from the training pool
+with the 2000 seed-42 eval indices excluded (built/cached at startup, see
+build_val_human_features). data/human_eval_features.npy -- the headline
+eval humans -- is never loaded as an eval class by this trainer; it is
+reserved for exactly one manual post-training evaluation. See RL_PILOT.md.
+
+See RL_PILOT.md at the repo root for the full design writeup, the smoke
+test transcript, and launch instructions. This file is an authoring-only
+pilot: nothing here has been trained for real.
+
+Run (real, GPU, in supervised bursts because this machine bluescreens
+under sustained GPU load):
+    .venv/Scripts/python.exe training/train_events_polar_grpo.py \
+        --iters 500 --device cuda --max-hours 1.5
+    ...then repeatedly, until done:
+    .venv/Scripts/python.exe training/train_events_polar_grpo.py \
+        --iters 500 --device cuda --max-hours 1.5 --resume
+
+Smoke test (CPU, tiny, exercises the whole loop incl. checkpoint/resume):
+    .venv/Scripts/python.exe training/train_events_polar_grpo.py \
+        --iters 2 --group-size 2 --specs-per-iter 4 --device cpu --smoke
+"""
+from __future__ import annotations
+
+import argparse
+import math
+import os
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import roc_auc_score
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from experiments._common import DurationModel  # noqa: E402
+from features import FEATURE_NAMES, extract_features, resample_trajectory  # noqa: E402
+from models.event_stream_polar import (  # noqa: E402
+    N_S_CLASSES, S_MASK_TOKEN, S_PAD_CLASS, TH_BINS, TH_MASK_TOKEN,
+    TH_NULL_CLASS, TICK_CLASS, EventStreamPolarModel, class_to_dtheta,
+    class_to_speed,
+)
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Pure fc_v2, single-sample (no SIR), RF OOB at N=2000 -- EXPERIMENTS.md
+# "Preference learning verdict" (July 6, 18:25). The pilot's success bar is
+# beating this without the tail canaries shrinking. NOTE: that number was
+# measured against the EVAL humans; in-training numbers here are against the
+# VALIDATION humans, so treat it as a reference line, not an exact target.
+BASELINE_FC_V2_AUC_N2000 = 0.6470
+
+STD_JERK_IDX = FEATURE_NAMES.index("std_jerk")
+CURVATURE_STD_IDX = FEATURE_NAMES.index("curvature_std")
+
+# Eval-humans draw, fixed by the headline protocol (regenerate_human_features
+# .py and experiments/novelty_check.py both reproduce it):
+# np.random.default_rng(42).choice(n_pool, 2000, replace=False).
+EVAL_HUMANS_SEED = 42
+EVAL_HUMANS_N = 2000
+
+
+# ---------------------------------------------------------------------------
+# Decode: copied from experiments/event_stream_polar.py's _decode (that file
+# is a locked experiment module and is not edited here). TICKMERGE (a
+# cosmetic post-process) is dropped for pilot simplicity; SNAP and ROUND --
+# the two decode-contract choices that actually move the detector score --
+# are kept, matching the "locked recipe" (EXPERIMENTS.md, July 6, 06:15).
+# ---------------------------------------------------------------------------
+def decode_trajectory(dt_z, s_cls, th_cls, sx, sy, angle, dt_mean, dt_std,
+                       snap=2.5, round_=True):
+    """(dt_z, s_cls, th_cls) numpy arrays for ONE trajectory -> (x, y, t)
+    list, or None if too short. Also returns n, the decoded real-event
+    count (first PAD position), used to length-normalize the REINFORCE
+    log-prob / KL sums."""
+    pad = s_cls >= S_PAD_CLASS
+    n = int(np.argmax(pad)) if pad.any() else len(s_cls)
+    if n < 2:
+        return None
+
+    s_cls_t = torch.from_numpy(s_cls[:n].astype(np.int64))
+    th_cls_t = torch.from_numpy(th_cls[:n].astype(np.int64))
+    s = class_to_speed(s_cls_t).numpy()
+    dth = class_to_dtheta(th_cls_t).numpy()
+
+    motion = s_cls[:n] > TICK_CLASS
+    heading = angle + np.cumsum(np.where(motion, dth, 0.0))
+    dx = np.where(motion, s * np.cos(heading), 0.0)
+    dy = np.where(motion, s * np.sin(heading), 0.0)
+    if snap > 0:
+        slow = motion & (s > 0) & (s < snap)
+        dx = np.where(slow, np.round(dx), dx)
+        dy = np.where(slow, np.round(dy), dy)
+
+    dt_ms = np.exp(dt_z[:n] * dt_std + dt_mean)
+    dt_s = np.clip(dt_ms, 0.1, 1000.0) / 1000.0
+
+    x = np.concatenate([[sx], sx + np.cumsum(dx)])
+    y = np.concatenate([[sy], sy + np.cumsum(dy)])
+    if round_:
+        x = np.round(x)
+        y = np.round(y)
+    t = np.concatenate([[0.0], np.cumsum(dt_s)])
+    return list(zip(x.tolist(), y.tolist(), t.tolist())), n
+
+
+def traj_to_features(traj):
+    f = extract_features(resample_trajectory(traj))
+    if f is None or not np.all(np.isfinite(f)):
+        return None
+    return f
+
+
+# ---------------------------------------------------------------------------
+# Validation human sample (honest-split guard).
+#
+# The headline eval humans (data/human_eval_features.npy) must never drive
+# best-checkpoint selection or auto-stop: that is model selection on the
+# eval sample, the exact leakage the July 5 "SIR leakage audit" fixed on the
+# selection side. This builds a fresh VALIDATION sample from the same 4.16M
+# pool with (a) the 2000 seed-42 eval indices excluded by index, and (b) any
+# row whose 18-feature vector matches a row of the reward reference
+# (data/human_ref_features_sir.npy) excluded by feature match -- that file's
+# generating script/seed is not in the repo (EXPERIMENTS.md provenance says
+# only "4000 drawn from the pool, eval indices excluded"), so index-level
+# disjointness from it cannot be proven and feature-level screening is the
+# honest fallback. Result is cached (uncommitted) so real runs pay the cost
+# once.
+# ---------------------------------------------------------------------------
+def build_val_human_features(train_dir: Path, cache_path: Path,
+                              sir_features: np.ndarray, n_val: int,
+                              val_seed: int) -> np.ndarray:
+    if cache_path.exists():
+        feats = np.load(cache_path)
+        print(f"[grpo] loaded cached validation humans: {feats.shape} "
+              f"({cache_path})", flush=True)
+        return feats
+
+    print(f"[grpo] building validation human sample (n={n_val}, "
+          f"seed={val_seed}) from the full pool...", flush=True)
+    offsets = np.load(train_dir / "full_pool_offsets.npy")
+    flat = np.load(train_dir / "pool_flat_i16.npy", mmap_mode="r")
+    t_arr = np.load(train_dir / "pool_t_rel_f32.npy", mmap_mode="r")
+    n_pool = len(offsets) - 1
+
+    def pool_feats(idx: int):
+        s, e = int(offsets[idx]), int(offsets[idx + 1])
+        xy = flat[s:e].astype(np.float64)
+        ts = t_arr[s:e].astype(np.float64)
+        traj = [(float(xy[j, 0]), float(xy[j, 1]), float(ts[j]))
+                for j in range(len(xy))]
+        return traj_to_features(traj)
+
+    eval_idx = np.random.default_rng(EVAL_HUMANS_SEED).choice(
+        n_pool, size=EVAL_HUMANS_N, replace=False)
+
+    # sanity: prove the reconstructed eval indices ARE the headline eval
+    # sample before trusting the exclusion (same gate novelty_check.py uses,
+    # first rows only -- cheap). human_eval_features.npy has exactly 2000
+    # rows, so row i corresponds to eval index i with nothing dropped.
+    eval_feats_cached = np.load(REPO_ROOT / "data" / "human_eval_features.npy")
+    assert len(eval_feats_cached) == EVAL_HUMANS_N
+    for i in range(5):
+        f = pool_feats(int(eval_idx[i]))
+        assert f is not None and np.allclose(f, eval_feats_cached[i], atol=1e-6), (
+            "reconstructed eval index does not reproduce "
+            "data/human_eval_features.npy; refusing to build the validation "
+            "sample from unverified indices")
+
+    mask = np.ones(n_pool, dtype=bool)
+    mask[eval_idx] = False
+    remaining = np.flatnonzero(mask)
+    draw = np.random.default_rng(val_seed).choice(
+        remaining, size=min(n_val + 1000, len(remaining)), replace=False)
+
+    sir_keys = {np.round(row, 6).tobytes() for row in sir_features}
+    rows, n_sir_hits = [], 0
+    for idx in draw:
+        f = pool_feats(int(idx))
+        if f is None:
+            continue
+        if np.round(f, 6).tobytes() in sir_keys:
+            n_sir_hits += 1
+            continue
+        rows.append(f)
+        if len(rows) >= n_val:
+            break
+    feats = np.asarray(rows)
+    if len(feats) < n_val:
+        raise RuntimeError(f"could only build {len(feats)}/{n_val} validation rows")
+    np.save(cache_path, feats)
+    print(f"[grpo] validation humans built: {feats.shape}, "
+          f"{n_sir_hits} rows dropped as reward-reference feature matches, "
+          f"cached to {cache_path}", flush=True)
+    return feats
+
+
+# ---------------------------------------------------------------------------
+# Spec / movement-character sampling (mirrors generate_paths() in
+# experiments/event_stream_polar.py: distance from the human empirical
+# distribution, uniform angle, duration from the binned empirical prior,
+# and -- for featcond checkpoints -- an independent KDE draw per sample from
+# the checkpoint's real-feature bank, nearest by log-distance).
+# ---------------------------------------------------------------------------
+def make_condition_batch(n_distinct, group_size, human_distances, duration_model,
+                          rng, device):
+    dists = rng.choice(human_distances, size=n_distinct)
+    angles = rng.uniform(0.0, 2.0 * math.pi, size=n_distinct)
+    log_dist = np.log(np.maximum(dists, 1e-6))
+    log_dur = np.array([
+        math.log(max(duration_model.sample(float(ld)), 1e-3)) for ld in log_dist
+    ], dtype=np.float64)
+    cond = np.stack(
+        [log_dist, log_dur, np.cos(angles), np.sin(angles)], axis=1
+    ).astype(np.float32)
+    if group_size > 1:
+        cond = np.repeat(cond, group_size, axis=0)
+        log_dist_rep = np.repeat(log_dist, group_size)
+    else:
+        log_dist_rep = log_dist
+    return torch.from_numpy(cond).to(device), log_dist_rep.astype(np.float32)
+
+
+def draw_feat(feat_bank, fb_order, fb_sorted_ld, log_dist_rep, bw, win, device):
+    B = len(log_dist_rep)
+    ld_t = torch.from_numpy(log_dist_rep).to(device)
+    pos = torch.searchsorted(fb_sorted_ld, ld_t.contiguous())
+    jit = torch.randint(-win, win + 1, (B,), device=device)
+    pos = (pos + jit).clamp(0, len(fb_order) - 1)
+    return feat_bank[fb_order[pos]] + bw * torch.randn(
+        B, feat_bank.shape[1], device=device)
+
+
+def sample_chunked(model, cond, feat, seq_len, n_steps, temperature,
+                    th_temperature, order, choice_temp, max_batch=500):
+    """model.sample() in bounded-size chunks: peak batch memory never exceeds
+    max_batch regardless of the total n asked for (reward refresh asks for
+    4000, the big eval for 2000; unchunked, either could OOM the 4070)."""
+    outs = []
+    with torch.no_grad():
+        for i in range(0, cond.shape[0], max_batch):
+            c = cond[i:i + max_batch]
+            f = feat[i:i + max_batch] if feat is not None else None
+            outs.append(model.sample(
+                c, seq_len, n_steps=n_steps, temperature=temperature,
+                th_temperature=th_temperature, order=order,
+                choice_temp=choice_temp, feat=f))
+    return (torch.cat([o[0] for o in outs]), torch.cat([o[1] for o in outs]),
+            torch.cat([o[2] for o in outs]))
+
+
+# ---------------------------------------------------------------------------
+# GRPO pass 1: no-grad rollout, a copy of EventStreamPolarModel.sample()
+# (that method is @torch.no_grad and lives in a tracked module file, so it
+# is copied here rather than edited) that additionally RECORDS, per reveal
+# step: the input dt_z, the reveal mask, the diffusion time presented to the
+# trunk, and the temperature-scaled log-prob of the tokens revealed at that
+# step (for the pass-2 consistency assert). Because tokens never change
+# after they are revealed, the (s_tok, th_tok) input state of any step can
+# be reconstructed in pass 2 from the final tokens plus the cumulative
+# reveal masks, so the full token grids are not stored per step.
+#
+# Nothing here carries gradient (torch.no_grad on the whole pass), so the
+# GPU never holds more than one forward's activations during rollout: the
+# memory profile is the same as plain inference sampling, plus the small
+# recorded tensors (dt_in float32 + reveal bool per step, ~35 MB total at
+# B=256, T=256, ~100 steps).
+# ---------------------------------------------------------------------------
+@torch.no_grad()
+def rollout_no_grad(model, cond, feat, seq_len, n_steps, temperature,
+                     th_temperature, order, choice_temp, device):
+    B = cond.shape[0]
+    temp = max(temperature, 1e-4)
+    th_temp = max(th_temperature if th_temperature is not None else temperature, 1e-4)
+
+    state = {
+        "dt_z": torch.randn(B, seq_len, device=device),
+        "s_tok": torch.full((B, seq_len), S_MASK_TOKEN, dtype=torch.long, device=device),
+        "th_tok": torch.full((B, seq_len), TH_MASK_TOKEN, dtype=torch.long, device=device),
+    }
+    step = 1.0 / n_steps
+    steps = []
+
+    def do_step(i, force_all=False):
+        t_cont = max(1.0 - i * step, 0.0)
+        t_scaled = torch.full((B,), t_cont * (model.n_steps - 1), device=device)
+        masked = state["s_tok"] == S_MASK_TOKEN
+        dt_in = state["dt_z"].clone()
+
+        x_feat = model.trunk(state["dt_z"], state["s_tok"], state["th_tok"],
+                             t_scaled, cond, feat)
+        v_pred = model.dt_head(x_feat).squeeze(-1)
+        state["dt_z"] = state["dt_z"] - step * v_pred
+
+        if not force_all:
+            t_next = max(t_cont - step, 0.0)
+            n_target = int(round(
+                float(model.sqrt_ab[int(t_next * (model.n_steps - 1))]) * seq_len))
+            n_new = n_target - int(seq_len - masked[0].sum().item())
+            if n_new <= 0:
+                return
+
+        s_logits = model.s_head(x_feat)
+        s_logp_temp = F.log_softmax(s_logits / temp, dim=-1)
+        s_probs_temp = s_logp_temp.exp()
+        s_new = torch.multinomial(
+            s_probs_temp.reshape(-1, s_probs_temp.shape[-1]), 1).view(B, seq_len)
+        s_for_th = torch.where(masked, s_new, state["s_tok"].clamp(max=N_S_CLASSES - 1))
+        th_l = model.th_logits(x_feat, s_for_th)
+        th_logp_temp = F.log_softmax(th_l / th_temp, dim=-1)
+        th_probs_temp = th_logp_temp.exp()
+        th_new_raw = torch.multinomial(
+            th_probs_temp.reshape(-1, th_probs_temp.shape[-1]), 1).view(B, seq_len)
+        motion = (s_new > TICK_CLASS) & (s_new < S_PAD_CLASS)
+
+        # log-prob and confidence gathered on the RAW sampled th index
+        # (0..TH_BINS-1) before it is overwritten with NULL below --
+        # mirrors the exact order of EventStreamPolarModel.sample().
+        logp_s = s_logp_temp.gather(-1, s_new.unsqueeze(-1)).squeeze(-1)
+        logp_th = th_logp_temp.gather(-1, th_new_raw.unsqueeze(-1)).squeeze(-1)
+        logp_tok = logp_s + motion.float() * logp_th
+
+        conf = s_probs_temp.gather(-1, s_new.unsqueeze(-1)).squeeze(-1)
+        th_conf = th_probs_temp.gather(-1, th_new_raw.unsqueeze(-1)).squeeze(-1)
+        conf = torch.where(motion, conf * th_conf, conf)
+
+        th_new = torch.where(motion, th_new_raw,
+                             torch.full_like(th_new_raw, TH_NULL_CLASS))
+
+        if force_all:
+            reveal = masked.clone()
+        else:
+            if order == "random":
+                score = torch.rand_like(conf)
+            elif order == "gumbel":
+                g = -torch.log(-torch.log(torch.rand_like(conf).clamp(1e-9, 1.0)))
+                anneal = choice_temp * (1.0 - i / n_steps)
+                score = torch.log(conf.clamp(min=1e-9)) + anneal * g
+            else:
+                score = conf
+            score = torch.where(masked, score, torch.full_like(score, -1e9))
+            rank = score.argsort(dim=-1, descending=True)
+            reveal = torch.zeros_like(masked)
+            reveal.scatter_(1, rank[:, :n_new], True)
+            reveal &= masked
+
+        state["s_tok"] = torch.where(reveal, s_new, state["s_tok"])
+        state["th_tok"] = torch.where(reveal, th_new, state["th_tok"])
+        steps.append({
+            "t_scaled": float(t_cont * (model.n_steps - 1)),
+            "dt_in": dt_in,
+            "reveal": reveal,
+            "logp": (logp_tok * reveal.float()).sum(dim=1),
+        })
+
+    for i in range(n_steps):
+        do_step(i)
+    if (state["s_tok"] == S_MASK_TOKEN).any():
+        do_step(n_steps, force_all=True)
+
+    return {"steps": steps, "final_s": state["s_tok"],
+            "final_th": state["th_tok"], "final_dt": state["dt_z"]}
+
+
+# ---------------------------------------------------------------------------
+# GRPO pass 2: replay each recorded reveal step's forward WITH grad, compute
+# that step's contribution to the total loss, and backward() it immediately
+# so the graph is freed per step -- at no point does the backward have to
+# hold more than one step's stored forward, which is what makes B=256 x
+# ~100 reveal steps feasible on the 4070 (a single backward over the whole
+# rollout would have to keep ~100 forwards' activations alive at once).
+#
+# The decomposition is exact: the single-backward loss would be
+#   mean_valid(-adv_j * sum_i logp_ij / n_j) + beta * mean_valid(sum_i kl_ij / n_j)
+# which equals the sum over steps i of
+#   sum_j (-adv_j * logp_ij + beta * kl_ij) * w_j / n_valid,   w_j = 1 / n_j
+# (w_j = 0 for invalid trajectories), so each step's partial loss carries
+# the same global denominator and the accumulated gradient is identical to
+# the single backward.
+#
+# Replay only needs the log-prob of tokens at REVEALED positions, and both
+# the log-prob gather and the th-head conditioning are position-local (the
+# th head sees the trunk feature plus the speed class at the SAME position),
+# so the discarded s/th samples pass 1 drew at not-yet-revealed positions
+# never enter any replayed quantity. The recomputed logp is asserted against
+# pass 1's recorded value for the first few steps (same weights, eval mode,
+# same inputs -> equal to float tolerance).
+# ---------------------------------------------------------------------------
+def replay_backward(model, ref_model, rollout, cond, feat, adv_w, inv_n,
+                     n_valid, beta, temperature, th_temperature, device,
+                     assert_first_k=3):
+    temp = max(temperature, 1e-4)
+    th_temp = max(th_temperature if th_temperature is not None else temperature, 1e-4)
+    final_s, final_th = rollout["final_s"], rollout["final_th"]
+    B, T = final_s.shape
+    revealed_before = torch.zeros(B, T, dtype=torch.bool, device=device)
+    total_pg, total_kl, max_logp_err = 0.0, 0.0, 0.0
+
+    motion_all = (final_s > TICK_CLASS) & (final_s < S_PAD_CLASS)
+    th_gather = final_th.clamp(max=TH_BINS - 1)
+
+    for si, rec in enumerate(rollout["steps"]):
+        reveal = rec["reveal"]
+        s_in = torch.where(revealed_before, final_s,
+                           torch.full_like(final_s, S_MASK_TOKEN))
+        th_in = torch.where(revealed_before, final_th,
+                            torch.full_like(final_th, TH_MASK_TOKEN))
+        t_scaled = torch.full((B,), rec["t_scaled"], device=device)
+
+        x_feat = model.trunk(rec["dt_in"], s_in, th_in, t_scaled, cond, feat)
+        s_logits = model.s_head(x_feat)
+        # position-local th conditioning: at revealed positions the sampled
+        # speed class is final_s; other positions are never gathered.
+        s_cond_tok = torch.where(reveal, final_s, s_in).clamp(max=N_S_CLASSES - 1)
+        th_l = model.th_logits(x_feat, s_cond_tok)
+
+        logp_s = F.log_softmax(s_logits / temp, dim=-1).gather(
+            -1, final_s.clamp(max=N_S_CLASSES - 1).unsqueeze(-1)).squeeze(-1)
+        logp_th = F.log_softmax(th_l / th_temp, dim=-1).gather(
+            -1, th_gather.unsqueeze(-1)).squeeze(-1)
+        logp_tok = logp_s + motion_all.float() * logp_th
+        logp_step = (logp_tok * reveal.float()).sum(dim=1)
+
+        if si < assert_first_k:
+            err = (logp_step.detach() - rec["logp"]).abs().max().item()
+            max_logp_err = max(max_logp_err, err)
+            assert err < 1e-2, (
+                f"pass-2 replay logprob mismatch at step {si}: max abs err "
+                f"{err:.6f}. Replay is not reproducing the rollout forward; "
+                f"the REINFORCE gradient would be wrong. Aborting.")
+
+        # KL(policy || frozen reference), full categorical, at temperature=1
+        # (the anchor measures actual weight drift, not the decoding knob).
+        with torch.no_grad():
+            ref_x = ref_model.trunk(rec["dt_in"], s_in, th_in, t_scaled, cond, feat)
+            ref_logq_s = F.log_softmax(ref_model.s_head(ref_x), dim=-1)
+            ref_logq_th = F.log_softmax(ref_model.th_logits(ref_x, s_cond_tok), dim=-1)
+        logp_s_raw = F.log_softmax(s_logits, dim=-1)
+        kl_s = (logp_s_raw.exp() * (logp_s_raw - ref_logq_s)).sum(-1)
+        logp_th_raw = F.log_softmax(th_l, dim=-1)
+        kl_th = (logp_th_raw.exp() * (logp_th_raw - ref_logq_th)).sum(-1)
+        kl_tok = kl_s + motion_all.float() * kl_th
+        kl_step = (kl_tok * reveal.float()).sum(dim=1)
+
+        pg_part = (-(adv_w * logp_step) * inv_n).sum() / n_valid
+        kl_part = beta * (kl_step * inv_n).sum() / n_valid
+        (pg_part + kl_part).backward()
+        total_pg += pg_part.item()
+        total_kl += kl_part.item()
+
+        revealed_before = revealed_before | reveal
+
+    return total_pg, total_kl, max_logp_err
+
+
+# ---------------------------------------------------------------------------
+# Reward RF: fit ONCE per refresh window (frozen in between), 18 detector
+# features (features.py), n_estimators=100. Human side is the 4000-row pool
+# reference data/human_ref_features_sir.npy (disjoint from the eval human
+# class per its EXPERIMENTS.md provenance; the same file SIR selection uses
+# for the same leakage reason).
+# ---------------------------------------------------------------------------
+def generate_features(model, cfg, dt_mean, dt_std, duration_model, human_distances,
+                       feat_bank, fb_order, fb_sorted_ld, has_feat, n, sample_steps,
+                       order, choice_temp, temperature, th_temperature, snap,
+                       feat_bw, feat_win, device, rng, sample_batch):
+    """n fresh pure-inference samples -> 18-feature matrix (valid rows only)."""
+    cond, log_dist_rep = make_condition_batch(n, 1, human_distances, duration_model,
+                                              rng, device)
+    feat = (draw_feat(feat_bank, fb_order, fb_sorted_ld, log_dist_rep, feat_bw,
+                      feat_win, device) if has_feat else None)
+    dt_z, s_tok, th_tok = sample_chunked(
+        model, cond, feat, cfg["max_seq_len"], sample_steps, temperature,
+        th_temperature, order, choice_temp, max_batch=sample_batch)
+    dt_np, s_np, th_np = dt_z.float().cpu().numpy(), s_tok.cpu().numpy(), th_tok.cpu().numpy()
+    angle_np = torch.atan2(cond[:, 3], cond[:, 2]).cpu().numpy()
+    feats = []
+    for i in range(n):
+        dec = decode_trajectory(dt_np[i], s_np[i], th_np[i], 0.0, 0.0,
+                                 float(angle_np[i]), dt_mean, dt_std, snap=snap)
+        if dec is None:
+            continue
+        f = traj_to_features(dec[0])
+        if f is not None:
+            feats.append(f)
+    return np.asarray(feats)
+
+
+def fit_reward_rf(gen_kwargs, human_ref, n, n_trees, seed, min_valid=20):
+    X_synth = generate_features(n=n, **gen_kwargs)
+    n_use = min(len(X_synth), len(human_ref))
+    if n_use < max(min_valid, n * 0.2):
+        return None, len(X_synth)
+    X = np.vstack([human_ref[:n_use], X_synth[:n_use]])
+    y = np.concatenate([np.zeros(n_use), np.ones(n_use)])
+    rf = RandomForestClassifier(n_estimators=n_trees, n_jobs=-1, random_state=seed)
+    rf.fit(X, y)
+    return rf, len(X_synth)
+
+
+def rf_reward(rf, X, clip=4.0):
+    p = np.clip(rf.predict_proba(X)[:, 1], 1e-4, 1.0 - 1e-4)
+    logit = np.log(p / (1.0 - p))
+    return np.clip(-logit, -clip, clip)
+
+
+# ---------------------------------------------------------------------------
+# Eval gate: pure inference-time generation (model.sample(), the real
+# no_grad method -- byte-for-byte the same code path production eval uses,
+# chunked for memory), fresh RF vs the VALIDATION humans (never the eval
+# humans -- see build_val_human_features), plus the two tail canaries from
+# the July 8 residual analysis (synthetic p99 / human p99 for std_jerk and
+# curvature_std; 0.85 and 0.56 for the selected sets -- if RL pushes these
+# DOWN, that is the Goodhart tail-shrinkage failure mode starting).
+# ---------------------------------------------------------------------------
+def run_eval(gen_kwargs, human_pool, n, seed, n_trees, label, min_valid=10):
+    X_synth = generate_features(n=n, **gen_kwargs)
+    n_use = min(len(X_synth), len(human_pool))
+    if n_use < max(min_valid, n * 0.2):
+        print(f"  [eval:{label}] too few valid trajectories "
+              f"({len(X_synth)}/{n}), skipping this eval", flush=True)
+        return None
+    Xs, Xh = X_synth[:n_use], human_pool[:n_use]
+    X = np.vstack([Xh, Xs])
+    y = np.concatenate([np.zeros(n_use), np.ones(n_use)])
+    rf = RandomForestClassifier(n_estimators=n_trees, oob_score=True, n_jobs=-1,
+                                random_state=seed)
+    rf.fit(X, y)
+    auc = roc_auc_score(y, rf.oob_decision_function_[:, 1])
+    tail_std_jerk = float(np.percentile(Xs[:, STD_JERK_IDX], 99)
+                          / max(np.percentile(Xh[:, STD_JERK_IDX], 99), 1e-9))
+    tail_curv = float(np.percentile(Xs[:, CURVATURE_STD_IDX], 99)
+                      / max(np.percentile(Xh[:, CURVATURE_STD_IDX], 99), 1e-9))
+    return {"label": label, "n": n_use, "auc": float(auc),
+            "tail_std_jerk": tail_std_jerk, "tail_curvature_std": tail_curv}
+
+
+# ---------------------------------------------------------------------------
+# Checkpointing: atomic write (tmp then rename), so a mid-write bluescreen
+# never leaves a truncated checkpoint (this machine bluescreens under
+# sustained GPU load; --max-hours exists for the same reason).
+# ---------------------------------------------------------------------------
+def atomic_save(obj, path: Path):
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    torch.save(obj, tmp)
+    os.replace(tmp, path)
+
+
+def train(args):
+    device = torch.device(args.device)
+    data_dir = Path(args.data_dir)
+    rng = np.random.default_rng(args.seed)
+    torch.manual_seed(args.seed)
+    t_start = time.time()
+
+    smoke_n = args.smoke_n
+    sample_steps = min(args.sample_steps, 8) if args.smoke else args.sample_steps
+    refresh_n = smoke_n if args.smoke else args.refresh_n
+    eval_n_small = smoke_n if args.smoke else args.eval_n_small
+    eval_n_big = smoke_n if args.smoke else args.eval_n_big
+    refresh_every = 1 if args.smoke else args.refresh_every
+    eval_every = 1 if args.smoke else args.eval_every
+    eval_big_every = 2 if args.smoke else args.eval_big_every
+    min_valid_refresh = 3 if args.smoke else 20
+    min_valid_eval = 3 if args.smoke else 10
+
+    print(f"[grpo] device={device} smoke={args.smoke} sample_steps={sample_steps} "
+          f"group_size={args.group_size} specs_per_iter={args.specs_per_iter} "
+          f"beta={args.beta} lr={args.lr} max_hours={args.max_hours} "
+          f"baseline_fc_v2_auc_n2000={BASELINE_FC_V2_AUC_N2000} (eval-humans "
+          f"reference line; in-training numbers are vs VALIDATION humans)",
+          flush=True)
+
+    # --- load policy + frozen reference (always the ORIGINAL checkpoint,
+    # never the resumed/partially-trained policy, so the KL anchor cannot
+    # itself drift under --resume) ---
+    ckpt_path = data_dir / args.load_from
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+    cfg = ckpt["config"]
+    dt_mean, dt_std = float(ckpt["dt_mean"]), float(ckpt["dt_std"])
+    has_feat = cfg.get("feat_dim", 0) > 0
+
+    model = EventStreamPolarModel(**cfg).to(device)
+    model.load_state_dict(ckpt["model_state_dict"])
+    print(f"[grpo] loaded policy from {args.load_from} (epoch {ckpt.get('epoch')}, "
+          f"feat_dim {cfg.get('feat_dim', 0)})", flush=True)
+
+    ref_model = EventStreamPolarModel(**cfg).to(device)
+    ref_model.load_state_dict(ckpt["model_state_dict"])
+    ref_model.eval()
+    for p in ref_model.parameters():
+        p.requires_grad_(False)
+
+    feat_bank = fb_order = fb_sorted_ld = None
+    if has_feat:
+        feat_bank = ckpt["feat_bank"].to(device)
+        fb_ld = ckpt["feat_bank_log_dist"]
+        fb_order = torch.argsort(fb_ld).to(device)
+        fb_sorted_ld = fb_ld.sort().values.to(device)
+
+    for p in model.dt_head.parameters():
+        p.requires_grad_(False)
+    g_params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(g_params, lr=args.lr, weight_decay=0.0)
+
+    # --- human pools ---
+    human_distances = np.load(data_dir / "human_distances.npy")
+    duration_model = DurationModel(data_dir, std_mult=args.dur_std)
+    reward_human_ref = np.load(args.reward_human_ref)
+    val_human_pool = build_val_human_features(
+        Path(args.train_pool_dir), Path(args.val_human_cache),
+        reward_human_ref, args.val_n, args.val_seed)
+    if args.smoke:
+        reward_human_ref = reward_human_ref[:smoke_n]
+        val_human_pool = val_human_pool[:smoke_n]
+    print(f"[grpo] reward-RF human ref: {len(reward_human_ref)} rows "
+          f"({args.reward_human_ref}); VALIDATION humans for all in-training "
+          f"evals/selection/auto-stop: {len(val_human_pool)} rows "
+          f"({args.val_human_cache}). Eval humans are NOT used by this trainer.",
+          flush=True)
+
+    gen_kwargs = dict(
+        model=model, cfg=cfg, dt_mean=dt_mean, dt_std=dt_std,
+        duration_model=duration_model, human_distances=human_distances,
+        feat_bank=feat_bank, fb_order=fb_order, fb_sorted_ld=fb_sorted_ld,
+        has_feat=has_feat, sample_steps=sample_steps, order=args.order,
+        choice_temp=args.choice_temp, temperature=args.temperature,
+        th_temperature=args.th_temperature, snap=args.snap, feat_bw=args.feat_bw,
+        feat_win=args.feat_win, device=device, rng=rng,
+        sample_batch=args.sample_batch)
+
+    save_path = data_dir / args.save_name
+    latest_path = save_path.with_stem(save_path.stem + "_latest")
+    best_path = save_path.with_stem(save_path.stem + "_best")
+
+    start_iter = 0
+    reward_rf = None
+    last_refresh_iter = -1
+    best_auc = None            # best-so-far big-eval AUC vs validation humans
+    iter0_auc = None           # pre-update baseline (recorded once)
+    iter0_tail_sj = None
+    iter0_tail_cv = None
+    bad_big_evals = 0          # consecutive bad big evals (patience 3)
+
+    if args.resume and latest_path.exists():
+        rck = torch.load(latest_path, map_location=device, weights_only=False)
+        model.load_state_dict(rck["model_state_dict"])
+        optimizer.load_state_dict(rck["opt_state_dict"])
+        start_iter = rck["grpo_iter"]
+        reward_rf = rck.get("reward_rf")
+        last_refresh_iter = rck.get("reward_rf_refresh_iter", -1)
+        best_auc = rck.get("best_auc")
+        iter0_auc = rck.get("iter0_auc")
+        iter0_tail_sj = rck.get("iter0_tail_std_jerk")
+        iter0_tail_cv = rck.get("iter0_tail_curvature_std")
+        bad_big_evals = rck.get("bad_big_evals", 0)
+        print(f"[grpo] resumed at iter {start_iter} (best_auc="
+              f"{best_auc if best_auc is not None else 'n/a'}, iter0_auc="
+              f"{iter0_auc if iter0_auc is not None else 'n/a'}, "
+              f"bad_big_evals={bad_big_evals}, reward_rf "
+              f"{'present' if reward_rf is not None else 'MISSING, will refit'})",
+              flush=True)
+
+    def maybe_checkpoint(it):
+        atomic_save({
+            "model_state_dict": model.state_dict(),
+            "opt_state_dict": optimizer.state_dict(),
+            "config": cfg, "dt_mean": dt_mean, "dt_std": dt_std,
+            "feat_mu": ckpt.get("feat_mu"), "feat_sd": ckpt.get("feat_sd"),
+            "feat_bank": ckpt.get("feat_bank"),
+            "feat_bank_log_dist": ckpt.get("feat_bank_log_dist"),
+            "grpo_iter": it, "reward_rf": reward_rf,
+            "reward_rf_refresh_iter": last_refresh_iter,
+            "best_auc": best_auc, "iter0_auc": iter0_auc,
+            "iter0_tail_std_jerk": iter0_tail_sj,
+            "iter0_tail_curvature_std": iter0_tail_cv,
+            "bad_big_evals": bad_big_evals, "args": vars(args),
+        }, latest_path)
+
+    model.eval()  # exact inference-time behavior throughout: dropout off,
+    #               cond-dropout off; grad still flows in the replay pass.
+
+    # --- iter-0 baseline: one big eval BEFORE any update, so the auto-stop
+    # thresholds (best + 0.02, 0.9 * iter-0 tails) are anchored to what the
+    # pretrained model actually reads against the validation humans ---
+    if iter0_auc is None:
+        res0 = run_eval(gen_kwargs, val_human_pool, eval_n_big, args.seed,
+                        args.rf_trees, label=f"N={eval_n_big} BASELINE(iter0)",
+                        min_valid=min_valid_eval)
+        if res0 is None:
+            raise RuntimeError("iter-0 baseline eval failed to produce enough "
+                               "valid trajectories; cannot anchor auto-stop")
+        iter0_auc = res0["auc"]
+        iter0_tail_sj = res0["tail_std_jerk"]
+        iter0_tail_cv = res0["tail_curvature_std"]
+        best_auc = iter0_auc
+        print(f"  >>> BASELINE iter 0: {res0['label']} AUC {iter0_auc:.4f} "
+              f"(n={res0['n']}) | tail std_jerk {iter0_tail_sj:.3f} "
+              f"curvature_std {iter0_tail_cv:.3f}", flush=True)
+        maybe_checkpoint(start_iter)
+
+    t0 = time.time()
+    it = start_iter
+    stop_reason = None
+    while it < args.iters:
+        # --- reward RF refresh (frozen between windows) ---
+        if reward_rf is None or (it - max(last_refresh_iter, 0)) >= refresh_every:
+            rf_t0 = time.time()
+            new_rf, n_valid_rf = fit_reward_rf(
+                gen_kwargs, reward_human_ref, refresh_n, args.rf_trees,
+                args.seed + it, min_valid=min_valid_refresh)
+            last_refresh_iter = it
+            if new_rf is None:
+                print(f"[grpo] iter {it}: reward-RF refresh got too few valid "
+                      f"trajectories ({n_valid_rf}/{refresh_n}), keeping previous RF",
+                      flush=True)
+            else:
+                reward_rf = new_rf
+                print(f"[grpo] iter {it}: refreshed reward RF on {n_valid_rf} fresh "
+                      f"samples vs {len(reward_human_ref)} training-pool humans "
+                      f"({time.time() - rf_t0:.1f}s)", flush=True)
+
+        # --- pass 1: no-grad rollout of G trajectories per spec ---
+        it_t0 = time.time()
+        cond, log_dist_rep = make_condition_batch(
+            args.specs_per_iter, args.group_size, human_distances, duration_model,
+            rng, device)
+        feat = (draw_feat(feat_bank, fb_order, fb_sorted_ld, log_dist_rep,
+                          args.feat_bw, args.feat_win, device) if has_feat else None)
+        rollout = rollout_no_grad(
+            model, cond, feat, cfg["max_seq_len"], sample_steps,
+            args.temperature, args.th_temperature, args.order, args.choice_temp,
+            device)
+        angle_np = torch.atan2(cond[:, 3], cond[:, 2]).cpu().numpy()
+        gen_time = time.time() - it_t0
+
+        dt_np = rollout["final_dt"].float().cpu().numpy()
+        s_np = rollout["final_s"].cpu().numpy()
+        th_np = rollout["final_th"].cpu().numpy()
+
+        B = cond.shape[0]
+        group_id = np.arange(B) // args.group_size
+        feats, valid_idx = [], []
+        for i in range(B):
+            dec = decode_trajectory(dt_np[i], s_np[i], th_np[i], 0.0, 0.0,
+                                     float(angle_np[i]), dt_mean, dt_std,
+                                     snap=args.snap)
+            if dec is None:
+                continue
+            traj, n_real = dec
+            f = traj_to_features(traj)
+            if f is None:
+                continue
+            feats.append(f)
+            valid_idx.append((i, max(n_real, 1)))
+
+        if len(valid_idx) < 0.5 * B or reward_rf is None:
+            print(f"  iter {it + 1:4d}/{args.iters} | too few valid trajectories "
+                  f"({len(valid_idx)}/{B}) or no reward RF yet, skipping update "
+                  f"({gen_time:.1f}s)", flush=True)
+            it += 1
+            continue
+
+        # --- reward + per-group z-scored advantage ---
+        X_synth = np.asarray(feats)
+        rewards = rf_reward(reward_rf, X_synth, clip=args.reward_clip)
+        advantages = np.zeros(len(valid_idx))
+        by_group = {}
+        for k, (i, _) in enumerate(valid_idx):
+            by_group.setdefault(group_id[i], []).append(k)
+        for members in by_group.values():
+            r = rewards[members]
+            if len(r) > 1 and r.std() > 1e-6:
+                advantages[members] = (r - r.mean()) / r.std()
+            # else leave at 0: single-member or degenerate group
+
+        # full-batch advantage / length weights (0 for invalid trajectories,
+        # so they contribute nothing to either loss term)
+        adv_w = torch.zeros(B, device=device)
+        inv_n = torch.zeros(B, device=device)
+        for k, (i, n_real) in enumerate(valid_idx):
+            adv_w[i] = float(advantages[k])
+            inv_n[i] = 1.0 / float(n_real)
+        n_valid = len(valid_idx)
+
+        # --- pass 2: per-step replay + immediate backward ---
+        optimizer.zero_grad()
+        loss_pg, loss_kl, logp_err = replay_backward(
+            model, ref_model, rollout, cond, feat, adv_w, inv_n, n_valid,
+            args.beta, args.temperature, args.th_temperature, device)
+        grad_norm = torch.nn.utils.clip_grad_norm_(g_params, args.clip_grad)
+        optimizer.step()
+        del rollout
+
+        iter_time = time.time() - it_t0
+        print(f"  iter {it + 1:4d}/{args.iters} | loss {loss_pg + loss_kl:+.4f} "
+              f"(pg {loss_pg:+.4f} kl {loss_kl:.4f}) | reward {rewards.mean():+.3f} | "
+              f"valid {n_valid}/{B} | grad {grad_norm:.3f} | replay-logp-err "
+              f"{logp_err:.2e} | gen {gen_time:.1f}s total {iter_time:.1f}s",
+              flush=True)
+
+        it += 1
+
+        # --- eval gate (all vs VALIDATION humans) ---
+        ran_eval = False
+        if it % eval_every == 0:
+            res = run_eval(gen_kwargs, val_human_pool, eval_n_small, args.seed,
+                           args.rf_trees, label=f"N={eval_n_small} TREND-ONLY",
+                           min_valid=min_valid_eval)
+            if res is not None:
+                print(f"  >>> EVAL iter {it}: {res['label']} AUC {res['auc']:.4f} "
+                      f"(n={res['n']}, vs val humans) | tail std_jerk "
+                      f"{res['tail_std_jerk']:.3f} curvature_std "
+                      f"{res['tail_curvature_std']:.3f} "
+                      f"(small-N reads ~0.3 optimistic, trend only)", flush=True)
+            ran_eval = True
+
+        if it % eval_big_every == 0:
+            res = run_eval(gen_kwargs, val_human_pool, eval_n_big, args.seed,
+                           args.rf_trees, label=f"N={eval_n_big} TRUSTWORTHY",
+                           min_valid=min_valid_eval)
+            if res is not None:
+                auc_big = res["auc"]
+                tail_sj, tail_cv = res["tail_std_jerk"], res["tail_curvature_std"]
+                print(f"  >>> EVAL iter {it}: {res['label']} AUC {auc_big:.4f} "
+                      f"(n={res['n']}, vs val humans; iter0 {iter0_auc:.4f}, "
+                      f"eval-humans reference line {BASELINE_FC_V2_AUC_N2000}) | "
+                      f"tail std_jerk {tail_sj:.3f} (iter0 {iter0_tail_sj:.3f}) "
+                      f"curvature_std {tail_cv:.3f} (iter0 {iter0_tail_cv:.3f})",
+                      flush=True)
+
+                # bad = clear regression beyond noise: AUC above best-so-far
+                # by more than 0.02 (~2 SE at N=2000), or a tail canary down
+                # more than 10% from its iter-0 value. Patience: 3 consecutive
+                # bad big evals. Single bad readings only warn (loudly).
+                bad = False
+                if auc_big > best_auc + 0.02:
+                    print(f"  !!! N={eval_n_big} AUC {auc_big:.4f} exceeds best "
+                          f"{best_auc:.4f} + 0.02 (regression beyond noise)",
+                          flush=True)
+                    bad = True
+                if tail_sj < 0.9 * iter0_tail_sj:
+                    print(f"  !!! tail canary std_jerk {tail_sj:.3f} below 90% of "
+                          f"iter-0 value {iter0_tail_sj:.3f} (Goodhart collapse "
+                          f"starting)", flush=True)
+                    bad = True
+                if tail_cv < 0.9 * iter0_tail_cv:
+                    print(f"  !!! tail canary curvature_std {tail_cv:.3f} below "
+                          f"90% of iter-0 value {iter0_tail_cv:.3f} (Goodhart "
+                          f"collapse starting)", flush=True)
+                    bad = True
+                bad_big_evals = bad_big_evals + 1 if bad else 0
+
+                if auc_big < best_auc:
+                    best_auc = auc_big
+                    atomic_save({
+                        "model_state_dict": model.state_dict(),
+                        "config": cfg, "dt_mean": dt_mean, "dt_std": dt_std,
+                        "feat_mu": ckpt.get("feat_mu"), "feat_sd": ckpt.get("feat_sd"),
+                        "feat_bank": ckpt.get("feat_bank"),
+                        "feat_bank_log_dist": ckpt.get("feat_bank_log_dist"),
+                        "grpo_iter": it, "grpo_auc_val_nbig": auc_big,
+                        "tail_std_jerk": tail_sj, "tail_curvature_std": tail_cv,
+                    }, best_path)
+                    print(f"  *** new best N={eval_n_big} AUC {auc_big:.4f} "
+                          f"(vs val humans), saved {best_path.name}", flush=True)
+
+                if bad_big_evals >= args.auto_stop_patience:
+                    stop_reason = (f"auto-stop: {bad_big_evals} consecutive bad "
+                                   f"big evals (patience {args.auto_stop_patience})")
+            ran_eval = True
+
+        if ran_eval:
+            maybe_checkpoint(it)
+
+        if stop_reason:
+            print(f"[grpo] {stop_reason}", flush=True)
+            break
+
+        if args.max_hours is not None and (time.time() - t_start) > args.max_hours * 3600:
+            maybe_checkpoint(it)
+            print(f"[grpo] time budget reached ({args.max_hours}h), checkpointed "
+                  f"at iter {it}; resume with --resume", flush=True)
+            return
+
+    maybe_checkpoint(it)
+    print(f"[grpo] done at iter {it}/{args.iters} in {time.time() - t0:.1f}s. "
+          f"best big-eval AUC vs val humans: {best_auc:.4f} "
+          f"(iter0 {iter0_auc:.4f}; eval-humans reference line "
+          f"{BASELINE_FC_V2_AUC_N2000}). Final headline number: run the standard "
+          f"eval against the untouched eval humans ONCE, manually, on the best "
+          f"checkpoint.", flush=True)
+
+
+def build_parser():
+    p = argparse.ArgumentParser(description="Trajectory-level GRPO pilot for the "
+                                            "polar event-stream model")
+    p.add_argument("--data-dir", default="training")
+    p.add_argument("--load-from", default="event_polar_4m_fc_v2.pt")
+    p.add_argument("--save-name", default="event_polar_4m_grpo_v1.pt")
+    p.add_argument("--iters", type=int, default=500)
+    p.add_argument("--beta", type=float, default=0.05, help="KL-anchor coefficient")
+    p.add_argument("--lr", type=float, default=1e-6)
+    p.add_argument("--group-size", type=int, default=8, help="G, trajectories per spec")
+    p.add_argument("--specs-per-iter", type=int, default=32)
+    p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument("--refresh-every", type=int, default=50)
+    p.add_argument("--refresh-n", type=int, default=4000)
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--max-hours", type=float, default=None,
+                   help="wall-clock budget; checkpoint and exit 0 when exceeded "
+                        "(this machine bluescreens under sustained GPU load, so "
+                        "real runs are launched in supervised bursts)")
+    p.add_argument("--sample-steps", type=int, default=100)
+    p.add_argument("--sample-batch", type=int, default=500,
+                   help="max batch for every no-grad model.sample() call "
+                        "(reward refresh, evals); bounds peak sampling memory")
+    p.add_argument("--order", default="gumbel", choices=["conf", "random", "gumbel"])
+    p.add_argument("--choice-temp", type=float, default=10.0)
+    p.add_argument("--temperature", type=float, default=1.0)
+    p.add_argument("--th-temperature", type=float, default=None)
+    p.add_argument("--snap", type=float, default=2.5)
+    p.add_argument("--feat-bw", type=float, default=0.25)
+    p.add_argument("--feat-win", type=int, default=256)
+    p.add_argument("--dur-std", type=float, default=1.0)
+    p.add_argument("--eval-every", type=int, default=25)
+    p.add_argument("--eval-big-every", type=int, default=100)
+    p.add_argument("--eval-n-small", type=int, default=500)
+    p.add_argument("--eval-n-big", type=int, default=2000)
+    p.add_argument("--clip-grad", type=float, default=1.0)
+    p.add_argument("--reward-clip", type=float, default=4.0)
+    p.add_argument("--rf-trees", type=int, default=100)
+    p.add_argument("--auto-stop-patience", type=int, default=3,
+                   help="consecutive bad BIG evals before auto-stop")
+    p.add_argument("--resume", action="store_true")
+    p.add_argument("--reward-human-ref",
+                   default=str(REPO_ROOT / "data" / "human_ref_features_sir.npy"),
+                   help="4000-row training-pool human reference (disjoint from "
+                        "the eval human class) for fitting the reward RF")
+    p.add_argument("--val-human-cache",
+                   default=str(REPO_ROOT / "data" / "human_val_features_grpo.npy"),
+                   help="cache path for the validation human sample used by all "
+                        "in-training evals/selection/auto-stop (built at startup "
+                        "if missing; leave uncommitted)")
+    p.add_argument("--val-n", type=int, default=2000)
+    p.add_argument("--val-seed", type=int, default=20260709,
+                   help="draw seed for the validation human sample (eval indices "
+                        "excluded by index, reward-reference rows by feature match)")
+    p.add_argument("--train-pool-dir", default=str(REPO_ROOT / "training"),
+                   help="directory with full_pool_offsets/pool_flat_i16/"
+                        "pool_t_rel_f32 for building the validation sample")
+    p.add_argument("--smoke", action="store_true",
+                   help="internal/CI-only: shrink sample-steps, refresh/eval "
+                        "sample sizes, and eval cadence to tiny constants so the "
+                        "loop can be exercised end to end on CPU in seconds. Not "
+                        "for real runs.")
+    p.add_argument("--smoke-n", type=int, default=8,
+                   help="sample count used everywhere --smoke shrinks a size to")
+    return p
+
+
+if __name__ == "__main__":
+    train(build_parser().parse_args())
