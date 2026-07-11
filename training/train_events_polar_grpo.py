@@ -836,6 +836,15 @@ def train(args):
         rck = torch.load(latest_path, map_location=device, weights_only=False)
         model.load_state_dict(rck["model_state_dict"])
         optimizer.load_state_dict(rck["opt_state_dict"])
+        # Honor the CLI --lr on resume. AdamW's load_state_dict restores the
+        # per-parameter moment estimates (m, v) AND the old lr scalar; we keep
+        # the moments but re-apply args.lr so lr is tunable across bursts.
+        restored_lr = optimizer.param_groups[0]["lr"]
+        if restored_lr != args.lr:
+            for grp in optimizer.param_groups:
+                grp["lr"] = args.lr
+            print(f"[grpo] lr override on resume: {restored_lr:g} -> "
+                  f"{args.lr:g} (moment estimates preserved)", flush=True)
         start_iter = rck["grpo_iter"]
         reward_rf = rck.get("reward_rf")
         last_refresh_iter = rck.get("reward_rf_refresh_iter", -1)
