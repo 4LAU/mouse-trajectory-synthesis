@@ -98,6 +98,7 @@ BASELINE_FC_V2_AUC_N2000 = 0.6470
 
 STD_JERK_IDX = FEATURE_NAMES.index("std_jerk")
 CURVATURE_STD_IDX = FEATURE_NAMES.index("curvature_std")
+PATH_EFFICIENCY_IDX = FEATURE_NAMES.index("path_efficiency")
 
 # Eval-humans draw, fixed by the headline protocol (regenerate_human_features
 # .py and experiments/novelty_check.py both reproduce it):
@@ -782,6 +783,13 @@ def train(args):
     h99_curvature_std = float(np.percentile(reward_human_ref[:, CURVATURE_STD_IDX], 99))
     h50_curvature_std = float(np.percentile(reward_human_ref[:, CURVATURE_STD_IDX], 50))
 
+    # Tail-support BONUS anchors (opt-in, default-inert): reward samples that
+    # already sit in the human tail/low-tail instead of only penalizing the
+    # human-exceeding overshoot tail above. Same source array, same "not
+    # checkpointed" reasoning as the p99/p50 anchors above.
+    h75_std_jerk = float(np.percentile(reward_human_ref[:, STD_JERK_IDX], 75))
+    h25_path_efficiency = float(np.percentile(reward_human_ref[:, PATH_EFFICIENCY_IDX], 25))
+
     replay_buf = ReplayBuffer(args.replay_cap, dim=reward_human_ref.shape[1])
 
     val_human_pool = build_val_human_features(
@@ -796,7 +804,9 @@ def train(args):
           f"({args.val_human_cache}). Eval humans are NOT used by this trainer. "
           f"tail-penalty anchors (p99): std_jerk {h99_std_jerk:.3f} "
           f"curvature_std {h99_curvature_std:.3f} | curv-floor anchor (p50): "
-          f"curvature_std {h50_curvature_std:.3f} | replay buffer cap "
+          f"curvature_std {h50_curvature_std:.3f} | tail-bonus anchors: "
+          f"std_jerk p75 {h75_std_jerk:.3f} path_efficiency p25 "
+          f"{h25_path_efficiency:.3f} | replay buffer cap "
           f"{args.replay_cap}", flush=True)
 
     gen_kwargs = dict(
@@ -991,6 +1001,30 @@ def train(args):
         else:
             curv_floor_pen = np.zeros(len(X_synth))
 
+        # one-sided per-sample tail-SUPPORT bonuses: reward (rather than
+        # penalize) samples that already sit in the human tail/low-tail,
+        # added INSIDE the reward for the same group-normalization reason as
+        # tail_pen/curv_floor_pen above -- a batch-constant bonus would be
+        # nulled by the group-mean subtraction. Both default to 0.0 (fully
+        # inert) so existing resume commands are unchanged.
+        if args.jerk_tail_bonus > 0:
+            sj = X_synth[:, STD_JERK_IDX]
+            jerk_bonus = args.jerk_tail_bonus * np.where(sj > 0, np.clip(
+                np.log(np.maximum(sj, 1e-12) / max(h75_std_jerk, 1e-9)),
+                0.0, 1.0), 0.0)
+            rewards = rewards + jerk_bonus
+        else:
+            jerk_bonus = np.zeros(len(X_synth))
+
+        if args.pe_tail_bonus > 0:
+            pe = X_synth[:, PATH_EFFICIENCY_IDX]
+            pe_bonus = args.pe_tail_bonus * np.where(pe > 0, np.clip(
+                np.log(max(h25_path_efficiency, 1e-9) / np.maximum(pe, 1e-12)),
+                0.0, 1.0), 0.0)
+            rewards = rewards + pe_bonus
+        else:
+            pe_bonus = np.zeros(len(X_synth))
+
         advantages = np.zeros(len(valid_idx))
         by_group = {}
         for k, (i, _) in enumerate(valid_idx):
@@ -1022,10 +1056,14 @@ def train(args):
 
         iter_time = time.time() - it_t0
         tailpen_frac = float((tail_pen > 0).mean()) if len(tail_pen) else 0.0
+        jbonus_frac = float((jerk_bonus > 0).mean()) if len(jerk_bonus) else 0.0
+        pebonus_frac = float((pe_bonus > 0).mean()) if len(pe_bonus) else 0.0
         print(f"  iter {it + 1:4d}/{args.iters} | loss {loss_pg + loss_kl:+.4f} "
               f"(pg {loss_pg:+.4f} kl {loss_kl:.4f}) | reward {rewards.mean():+.3f} | "
               f"tailpen {tail_pen.mean():.3f} ({tailpen_frac * 100:.1f}%) | "
               f"curvpen {curv_floor_pen.mean():.3f} | "
+              f"jbonus {jerk_bonus.mean():.3f} ({jbonus_frac * 100:.1f}%) | "
+              f"pebonus {pe_bonus.mean():.3f} ({pebonus_frac * 100:.1f}%) | "
               f"valid {n_valid}/{B} | grad {grad_norm:.3f} | replay-logp-err "
               f"{logp_err:.2e} | gen {gen_time:.1f}s total {iter_time:.1f}s",
               flush=True)
@@ -1184,6 +1222,18 @@ def build_parser():
                         "curvature_std UP toward the human median (log-ratio, "
                         "clipped at 3.0, subtracted from reward before the "
                         "group-relative advantage normalization); 0 disables")
+    p.add_argument("--jerk-tail-bonus", type=float, default=0.0,
+                   help="one-sided per-sample BONUS coefficient rewarding "
+                        "std_jerk above the human p75 (log-ratio, clipped at "
+                        "1.0, added to reward before the group-relative "
+                        "advantage normalization); 0.0 (default) disables, "
+                        "fully inert")
+    p.add_argument("--pe-tail-bonus", type=float, default=0.0,
+                   help="one-sided per-sample BONUS coefficient rewarding "
+                        "path_efficiency below the human p25 (log-ratio, "
+                        "clipped at 1.0, added to reward before the "
+                        "group-relative advantage normalization); 0.0 "
+                        "(default) disables, fully inert")
     p.add_argument("--auto-stop-patience", type=int, default=3,
                    help="consecutive bad BIG evals before auto-stop")
     p.add_argument("--resume", action="store_true")
