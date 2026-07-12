@@ -3496,3 +3496,157 @@ in external_validation/headline_statistics_45_46.json, produced by
 external_validation/headline_statistics_45_46.py. The July 8 three-seed
 numbers are unchanged, in external_validation/headline_statistics.json,
 produced by external_validation/headline_statistics.py.
+
+## The RL pilot: teaching the detector's signal into the weights, and why it is parked (July 10-11)
+
+METHODOLOGY 7.11 named trajectory-level RL the most direct open route to a
+model that reaches 0.50 on its own, without help from set-level selection.
+Every earlier attempt at teaching the detector's signal directly into the
+weights had failed for one of two reasons: straight-through estimators
+pushed gradients through the sampler and destabilized it, and DPO Goodharted
+the judge: preference accuracy climbed to 0.87 while the eval AUC rose
+monotonically to 0.9782 (July 6 entry above).
+GRPO sidesteps both failure modes by construction: sample a full
+trajectory using the exact eval-time reveal procedure, score the finished
+trajectory, and update only on the scalar reward through the log-probs of
+tokens that were already sampled, which is ordinary REINFORCE with a group
+baseline rather than anything that differentiates through sampling. The
+design doc is RL_PILOT.md; the trainer is
+training/train_events_polar_grpo.py.
+
+The reward is -logit(P_synthetic) from an RF trained on the 18 detector
+features, clipped to +/-4 so a single confident misclassification cannot
+dominate a group's advantage. Trajectories were sampled in groups of 8 per
+spec, with per-group advantages z-scored before the policy update, and a
+per-token KL leash held the policy against a frozen copy of the pretrained
+model so it could not wander arbitrarily far chasing reward. The reward RF
+itself was refit every 25 iterations rather than held fixed, each refit
+mixing in 4,000 rows from a replay buffer capped at 20,000 past-policy
+samples, so the detector kept some memory of earlier policies instead of
+scoring only the newest one. In-training evaluation ran against a held-out
+validation sample of humans; the untouched evaluation humans reserved for
+the project's actual headline numbers never entered this loop. The
+hardware was a laptop RTX 4070 with a known history of bluescreening under
+sustained load, so training ran in supervised 90-minute bursts separated
+by 5-minute cooldowns, with an 83C alarm threshold. One exit-139 segfault
+hit at iteration 350 during a reward refit; peak temperature at the time
+was 74C, so it was not a thermal event, and 25-iteration checkpointing
+meant the crash cost at most one block of training.
+
+AUC against the validation humans (lower is better, since the reward is
+built to push the detector toward chance):
+
+| iteration | validation AUC (trustworthy N=2000) |
+|---|---|
+| 0 | 0.6591 |
+| 100 | 0.6456 |
+| 200 | 0.6381 (best checkpoint on disk) |
+| 300 | 0.6505 |
+| 400 | 0.6419 |
+
+The run finds a plateau at roughly 0.638 to 0.642, a gain of about 0.017
+AUC from the starting point, and then sits in what looks like noise rather
+than continuing to improve.
+
+Two things were tried against the plateau. First, a judge audit: a
+diagnostic RF (OOB 0.660) found the residual separation spread thinly
+across many features rather than concentrated in one or two, with
+curvature_std, path_efficiency, std_jerk, and the two angular-velocity
+features carrying the most weight. Underneath that spread were two
+genuine support deficits rather than a simple mean shift: the upper tail
+of std_jerk (synthetic p99 sitting at 0.74 to 0.86x the human value) and
+the low tail of path_efficiency (synthetic trajectories never reach the
+human p1-p5 wandering zone), while angular velocity ran the other
+direction, overshooting human values by 10 to 47 percent. Two one-sided
+tail bonuses, reward bonuses for std_jerk above the human p75 and for
+path_efficiency below the human p25, log-ratio clipped at 1.0 and engaging
+on 15 to 28 percent of samples, recovered the iteration-300 regression and
+moved the std_jerk tail ratio from 0.754 to 0.877, but did not break the
+plateau itself. Second, the learning rate: loosening it from 1e-06 to
+3e-06 made the run worse, not better. Iteration 450 under the higher rate
+read 0.6591, all the way back to the starting value, with the model
+gaming each frozen RF snapshot faster than before and each refit
+re-separating it in turn, a Goodhart cat-and-mouse rather than genuine
+progress. The learning-rate axis is now exhausted in both directions.
+
+The result that actually decides this is a go/no-go test, not the AUC
+trajectory above. Candidate pools were regenerated from the iteration-200
+checkpoint under the project's locked recipe, and the identical set-level
+selection and honest replay that produced the 0.504 headline were run
+against them, seeds 42, 43, and 44. The RL pools read 0.5290, 0.5116, and
+0.5137 (mean 0.518) against the untouched base model's 0.5095, 0.5030, and
+0.4993 (mean 0.504). RL loses on all three seeds. The raw RL pools are
+marginally better per item before selection (SIR selection alone reads
+about 0.562 against 0.568 for the base model), but the set-level
+reselection ends up worse: RL narrows candidate diversity, and the
+trust-loop's whole value depends on choosing from a diverse pool, so the
+base model's advantage under selection reverses at exactly the stage that
+produces the project's headline number. The scripts are
+scripts/run_poolgen_grpo.sh and scripts/run_select_grpo.sh.
+
+The verdict is parked, not refuted in principle. Every axis tried, learning
+rate in both directions, tail bonuses, and longer training, landed at or
+above the 0.638 plateau, and the pipeline that actually matters (the
+selection-and-replay path) ends up worse with the RL checkpoint than
+without it. The iteration-200 checkpoint
+(event_polar_4m_grpo_v1_best.pt) stays on the shelf, unused; the project's
+headline stands on the frozen pretrained model plus selection. Two ideas
+remain untried and are logged here for whoever picks this up next: a
+reward built from a panel of several detector families instead of one RF,
+and using the RL-trained model as a stronger starting point that selection
+then operates on top of, rather than as a replacement for selection.
+
+## Growing the out-of-sample set to six seeds (July 11)
+
+The July 8-9 entry left the config's generalization measured on two
+out-of-sample seeds, 45 and 46, both landing above chance. Two seeds is a
+hint, not an estimate, so the last GPU day of this pass went to seeds 47
+through 50 via scripts/run_oos.sh, one skip-safe script per seed running
+the same three stages each time: GPU pool generation (about 40 minutes per
+seed; the July 8 attempt at doing this on CPU burned 6.7 hours without
+finishing a single seed, which is the reason this round runs on GPU at
+all), the offline 33-feature judge-B selection, and the honest replay
+through evaluate.py, with the human class drawn from the untouched
+evaluation sample used throughout the project. The run completed July 11
+at 16:44.
+
+The full table, RF OOB, config f20d85_r30_rf:
+
+| seeds | RF OOB |
+|---|---|
+| 42, 43, 44 (tuning) | 0.5095, 0.5030, 0.4993, mean 0.504 |
+| 45, 46, 47, 48, 49, 50 (out-of-sample) | 0.5148, 0.5190, 0.5221, 0.5114, 0.5033, 0.5087 |
+| out-of-sample mean | 0.5132, sd 0.0069, 95% t-interval [0.506, 0.520] |
+
+The out-of-sample interval excludes 0.50.
+
+The July 8-9 entry pre-registered a rule for exactly this situation:
+report drift honestly, keep the three-seed headline. That rule has a
+second half, and it is now triggered. With the out-of-sample mean firmed
+up above 0.51 and its interval no longer touching chance, the
+documentation has to state the generalization number, about 0.513,
+alongside the 0.504 tuning headline every time, and it may not quote 0.504
+alone anymore. This entry is where that obligation enters the record.
+
+The same out-of-sample replay logs also carry two other detector families,
+run for a cross-check. The raw-signal neural detector (3-fold, never part
+of any selection loop, so it is the closest thing this project has to an
+independent check) reads 0.5033, 0.5077, 0.5063, 0.5174, 0.5036, and
+0.5080 across seeds 45 to 50, mean 0.508. The GBM (5-fold) reads 0.5211,
+0.5189, 0.5262, 0.5271, 0.5362, and 0.5106, mean 0.523, with a worst single
+read of 0.536. That worst read is the number a skeptic would reach for
+first, so it is quoted here first rather than left for someone else to
+find.
+
+The sentence this project will use from now on: fresh out-of-sample tests
+average 0.513, near chance, across three detector families (RF, GBM,
+raw-signal NN), with a worst case around 0.53. Not "undetectable"; that
+word outruns what the evidence actually supports.
+
+Seed-level statistics live in
+external_validation/oos_seed_statistics.py and its accompanying JSON, a
+seed-level companion to the July 8 bootstrap script. The per-seed feature
+matrices for seeds 47 through 50 live on the GPU machine and are not part
+of the release bundle, so this script computes directly from the recorded
+per-seed values rather than refitting from raw features.
+
