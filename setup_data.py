@@ -1,4 +1,4 @@
-"""Download model checkpoints and evaluation data for mouse-trajectory-synthesis.
+"""Download model checkpoints and evaluation data for MIME-mouse.
 
 Default mode downloads release assets from GitHub into ./data/.
 Build mode (--build-demo-pool) downloads the Balabit Mouse Dynamics Challenge
@@ -25,7 +25,7 @@ import numpy as np
 # ---------------------------------------------------------------------------
 
 RELEASE_BASE = (
-    "https://github.com/4LAU/mouse-trajectory-synthesis/releases/latest/download/"
+    "https://github.com/4LAU/MIME-mouse/releases/latest/download/"
 )
 
 RELEASE_ASSETS = [

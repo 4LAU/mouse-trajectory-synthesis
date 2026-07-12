@@ -1,5 +1,5 @@
 [project]
-name = "mouse-trajectory-synthesis"
+name = "mime-mouse"
 version = "0.1.0"
 description = "Generative modeling of human mouse trajectories: evaluation framework, corpus baseline, and research findings"
 requires-python = ">=3.10"
@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/4LAU/mouse-trajectory-synthesis"
+Repository = "https://github.com/4LAU/MIME-mouse"
 
 [tool.setuptools]
 py-modules = ["features", "evaluate"]

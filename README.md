@@ -1,8 +1,10 @@
-[![verify](https://github.com/4LAU/mouse-trajectory-synthesis/actions/workflows/verify.yml/badge.svg)](https://github.com/4LAU/mouse-trajectory-synthesis/actions/workflows/verify.yml)
+[![verify](https://github.com/4LAU/MIME-mouse/actions/workflows/verify.yml/badge.svg)](https://github.com/4LAU/MIME-mouse/actions/workflows/verify.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://python.org)
 
-# Mouse Trajectory Synthesis
+# MIME-mouse
+
+MIME (**M**ouse **I**mitation via **M**asked **E**vents) is a generative model of human mouse movement. The name says what it does twice over: like a mime, it imitates human movement, and it does so by filling in masked events, the technique at the model's core.
 
 Bots and scripts move a mouse cursor in ways that give them away. Real human movement has a signature: it accelerates and decelerates unevenly, curves slightly off the direct line, and even pauses mid-motion for a few milliseconds before continuing. Synthetic movement, the straight lines and smooth curves a script generates, looks nothing like that up close, which is why detection systems can catch it.
 
@@ -21,8 +23,8 @@ The rest of this page explains how to run it yourself, what the result actually 
 Each step below does one thing. Run them in order from a fresh clone.
 
 ```bash
-git clone https://github.com/4LAU/mouse-trajectory-synthesis.git
-cd mouse-trajectory-synthesis
+git clone https://github.com/4LAU/MIME-mouse.git
+cd MIME-mouse
 pip install -e .
 ```
 
@@ -68,7 +70,7 @@ None of this should be read as "undetectable." It means near chance against the 
 
 Real mouse movement is not purely continuous. At 125 Hz sampling, 6.14 percent of all recorded samples are exact zero-displacement stalls: the cursor sits perfectly still for a frame or more before moving again, usually right at a direction change or a deceleration. Those stalls carry essentially all of the curvature signal a detector can key on.
 
-Every continuous generative approach this project tried, diffusion, flow matching, recurrent networks, can get arbitrarily close to zero displacement but cannot produce an exact zero, and each one plateaued somewhere between 0.86 and 1.0 AUC as a result. The fix was to stop treating position as continuous. Each trajectory is instead encoded as a stream of discrete events (a speed bin, a heading-change bin, and a gap in time), with the stall represented directly as its own zero-speed token rather than approximated by a small nonzero one. A masked-token model in the MaskGIT and SoundStorm style, the same family used for parallel audio and image generation, is trained on 4.16 million of these event streams and gets most of the way there on its own.
+Every continuous generative approach this project tried, diffusion, flow matching, recurrent networks, can get arbitrarily close to zero displacement but cannot produce an exact zero, and each one plateaued somewhere between 0.86 and 1.0 AUC as a result. The fix was to stop treating position as continuous. Each trajectory is instead encoded as a stream of discrete events (a speed bin, a heading-change bin, and a gap in time), with the stall represented directly as its own zero-speed token rather than approximated by a small nonzero one. The MIME model, a masked-token model in the MaskGIT and SoundStorm style (the same family used for parallel audio and image generation), is trained on 4.16 million of these event streams and gets most of the way there on its own. This masking is where the name comes from: during training, pieces of a real movement's event stream are hidden and the model learns to fill them back in; at generation time it starts from a fully masked stream and fills in everything.
 
 Two other things mattered almost as much as the architecture. Positions have to snap to the integer pixel grid the recording hardware actually writes to; leaving slow movement off that grid alone cost about 0.05 AUC. And once the model's own kinematics were good enough, the remaining gap turned out to be a selection problem rather than a generation problem: given several candidate paths for the same start and end point, an adversarial judge that scores the whole chosen set at once, rather than one candidate in isolation, closes most of what selecting one-at-a-time leaves behind.
 
@@ -113,7 +115,7 @@ Developed on an RTX 4070 (12GB VRAM). A single consumer GPU is sufficient for al
 ## Repository structure
 
 ```
-mouse-trajectory-synthesis/
+MIME-mouse/
 ├── evaluate.py                       # Adversarial evaluator (RF OOB AUC, GBM CV, raw-NN)
 ├── features.py                       # 18 kinematic feature extractors
 ├── event_codec.py                    # Event-stream encode/decode

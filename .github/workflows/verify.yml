@@ -29,7 +29,7 @@ jobs:
 
       - name: Download reproduce bundle from the release
         run: |
-          BASE=https://github.com/4LAU/mouse-trajectory-synthesis/releases/latest/download
+          BASE=https://github.com/4LAU/MIME-mouse/releases/latest/download
           for s in 42 43 44; do
             curl -sSLO $BASE/pool_s${s}_k16.npz
             curl -sSLO $BASE/pool_s${s}_k16_picks_trust33_f20d85_r30_rf.npy

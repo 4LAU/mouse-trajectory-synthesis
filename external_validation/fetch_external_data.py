@@ -43,7 +43,7 @@ def download(url: str, dest: Path, force: bool) -> None:
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
     print(f"downloading {url} -> {dest}")
-    req = urllib.request.Request(url, headers={"User-Agent": "mouse-trajectory-synthesis/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "MIME-mouse/1.0"})
     with urllib.request.urlopen(req) as resp, open(dest, "wb") as f:
         f.write(resp.read())
     print(f"saved {dest} ({dest.stat().st_size} bytes)")
