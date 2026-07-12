@@ -8,9 +8,18 @@ Generative modeling of human mouse trajectories. Given only a start and end coor
 
 ## Key Insight
 
-Human mouse movements aren't purely continuous. At 125 Hz sampling, 6.14% of all samples are exact zero-displacement stalls: the cursor sits perfectly still for one or more frames before moving again. These stalls happen at specific points during movement (direction changes, deceleration phases) and they produce essentially all of the measured curvature signal in the trajectory. Continuous models (diffusion, flow matching, GRUs) output probability distributions over real-valued coordinates. They can get arbitrarily close to zero displacement, but they cannot produce exact zeros, so every continuous model we tested plateaus somewhere between AUC 0.86 and 1.0.
+**Human mouse movements aren't purely continuous.**
 
-The way through turned out to be a discrete one: encode each trajectory as a stream of events (a speed bin, a heading-increment bin, and an inter-event time), with the stall represented as a first-class zero-speed token instead of a rounding error. A masked-token model (MaskGIT-style, the same family used for parallel audio and image generation) trained on 4 million of these event streams gets almost all the way to indistinguishable from real recordings. Two things mattered as much as the architecture itself: the decoder has to respect the integer pixel grid the recording device actually writes to (leaving positions off-lattice alone costs about 0.05 AUC), and once the model's own kinematics were good enough, the remaining gap turned out to be a selection problem, not a generation problem. Given several candidate movements for the same start and end point, picking which one to keep, using a detector-matched judge that looks at the whole selected population rather than one candidate at a time, closed most of what was left.
+At 125 Hz sampling, 6.14% of all samples are exact zero-displacement stalls: the cursor sits perfectly still for one or more frames before moving again. These stalls happen at specific points during movement (direction changes, deceleration phases) and they produce essentially all of the measured curvature signal in the trajectory.
+
+Continuous models (diffusion, flow matching, GRUs) output probability distributions over real-valued coordinates. They can get arbitrarily close to zero displacement, but they cannot produce exact zeros, so every continuous model we tested plateaus somewhere between AUC 0.86 and 1.0.
+
+The way through turned out to be a discrete one: encode each trajectory as a stream of events (a speed bin, a heading-increment bin, and an inter-event time), with the stall represented as a first-class zero-speed token instead of a rounding error. A masked-token model (MaskGIT-style, the same family used for parallel audio and image generation) trained on 4 million of these event streams gets almost all the way to indistinguishable from real recordings.
+
+Two things mattered as much as the architecture itself:
+
+- The decoder has to respect the integer pixel grid the recording device actually writes to (leaving positions off-lattice alone costs about 0.05 AUC).
+- Once the model's own kinematics were good enough, the remaining gap turned out to be a selection problem, not a generation problem. Given several candidate movements for the same start and end point, picking which one to keep, using a detector-matched judge that looks at the whole selected population rather than one candidate at a time, closed most of what was left.
 
 ![Generated Trajectories](figures/trajectory_overlay.png)
 
@@ -31,7 +40,11 @@ All numbers are OOB Random Forest AUC on 18 kinematic features (n=2000 synthetic
 
 **0.652 is the current best result for a single generative model with no selection step.** It ships only learned weights (about 25 MB), needs no recorded trajectory data at inference time, and every output is model-generated.
 
-**0.568 is the honest, multi-seed-confirmed best for the full system with per-item selection** (one candidate chosen at a time). Moving to set-level reselection, where the judge scores the whole selected population rather than each candidate alone, reaches **0.504** across three seeds (0.5095 / 0.5030 / 0.4993), chance level on the primary detector. That recipe uses a judge widened to the 15 raw-signal features a detector reads directly, which closes the raw-signal channel to 0.509 and holds every tree and nearest-neighbor detector within about 0.014 of chance. A narrower 18-feature judge reaches 0.491 on the same three seeds but leaves the raw-signal detector at 0.529; we report the wider judge because it removes that opening. The one residual both recipes leave is a set of linear and MLP detectors on the summary features, which still read about 0.54 (see Validity and limitations).
+**0.568 is the honest, multi-seed-confirmed best for the full system with per-item selection** (one candidate chosen at a time).
+
+Moving to set-level reselection, where the judge scores the whole selected population rather than each candidate alone, reaches **0.504** across three seeds (0.5095 / 0.5030 / 0.4993), chance level on the primary detector. That recipe uses a judge widened to the 15 raw-signal features a detector reads directly, which closes the raw-signal channel to 0.509 and holds every tree and nearest-neighbor detector within about 0.014 of chance.
+
+A narrower 18-feature judge reaches 0.491 on the same three seeds but leaves the raw-signal detector at 0.529; we report the wider judge because it removes that opening. The one residual both recipes leave is a set of linear and MLP detectors on the summary features, which still read about 0.54 (see Validity and limitations).
 
 ![AUC by Architecture Family](figures/auc_progression.png)
 
@@ -57,13 +70,31 @@ The evaluation is adversarial: a Random Forest classifier tries to distinguish g
 
 A number this close to 0.50 invites a fair question: did we make trajectories more human, or did we just learn to beat the one classifier we grade with? We took that seriously, and the honest answer has both a solid part and a real limit.
 
+### Memorization
+
 Start with what the result is not. It is not a model memorizing its training data. The 6M-parameter network is frozen, and nothing about the final number touches its weights. The model produces 16 to 32 candidate movements for each start and end point, and an adversarial loop keeps the subset whose population statistics look most human. We are choosing among trajectories the model already generates, so the classic overfitting failure does not apply to this step.
 
-The sharper risk is that we tuned the selection judge against a Random Forest and then report a Random Forest score. On its own that could mean we learned to fool one classifier rather than to look human. So we ran six detector families that never saw the tuning: gradient boosting, extra-trees, a neural network, logistic regression, a histogram gradient booster, and a detector that reads the raw speed signal directly instead of the summary features. Against the reported judge they span 0.484 to 0.55. The raw-signal detector was the sharpest test, because "just look at the raw speeds" is the most obvious attack: a narrower judge left it at 0.583, and widening the judge to cover those raw features brought it down to 0.484 with no cost to the tree detectors. We also trained two heavier sequence models on the raw resampled trajectories, a dilated CNN with a receptive field spanning the whole movement and a bidirectional GRU, and both stayed at chance (0.509) against the reported selection. What remains is the neural-network and logistic detectors on the summary features, still near 0.54 rather than a dead 0.50, so a small amount of detectable structure is left and we would rather say so than round it away. Doubling the candidate pool to 32 per movement cut the neural-network detector to 0.52 on the one seed we could test, but the logistic reading persisted, so we treat it as a property of the generator that selection cannot remove.
+### Judge overfitting
 
-One scope boundary deserves its own sentence. Every detector above reads trajectories after a 125 Hz resample, which is where the kinematic claim lives. The raw event stream underneath is a different matter: real hardware reports motion on its polling clock (95 percent of deltas in our held-out data are exactly 8 ms), the model emits its own timing, and a detector that reads nothing but raw timestamp deltas separates the two trivially. We tried re-emitting generated paths on the human clock and found it cannot be done after the fact without disturbing the resampled kinematics the rest of the evaluation stands on, so the honest position is disclosure: the result covers movement, not clock forensics. A deployment whose timestamps come from the host's own polling loop sidesteps the channel, and making the generator emit on a clock lattice natively is listed under open directions.
+The sharper risk is that we tuned the selection judge against a Random Forest and then report a Random Forest score. On its own that could mean we learned to fool one classifier rather than to look human. So we ran six detector families that never saw the tuning: gradient boosting, extra-trees, a neural network, logistic regression, a histogram gradient booster, and a detector that reads the raw speed signal directly instead of the summary features. Against the reported judge they span 0.484 to 0.55.
 
-The winning selection recipe was chosen from eleven candidates on a proxy metric, which flatters any result, so we confirm it by reproduction. The same recipe runs against independent candidate pools built from different random seeds, and the number only counts if it holds across all of them. The reported figure is also measured against humans the selection never saw: fitting uses one half of a human reference set, an untouched second half supplies the proxy during tuning, and the final number comes from replaying the winning selection against a separate evaluation sample no part of the process has touched. The gap between the tuning proxy and that held-out figure has stayed within one to two points, which is itself a sign the split is not being gamed.
+The raw-signal detector was the sharpest test, because "just look at the raw speeds" is the most obvious attack: a narrower judge left it at 0.583, and widening the judge to cover those raw features brought it down to 0.484 with no cost to the tree detectors. We also trained two heavier sequence models on the raw resampled trajectories, a dilated CNN with a receptive field spanning the whole movement and a bidirectional GRU, and both stayed at chance (0.509) against the reported selection.
+
+What remains is the neural-network and logistic detectors on the summary features, still near 0.54 rather than a dead 0.50, so a small amount of detectable structure is left and we would rather say so than round it away. Doubling the candidate pool to 32 per movement cut the neural-network detector to 0.52 on the one seed we could test, but the logistic reading persisted, so we treat it as a property of the generator that selection cannot remove.
+
+### Clock forensics
+
+One scope boundary deserves its own sentence. Every detector above reads trajectories after a 125 Hz resample, which is where the kinematic claim lives. The raw event stream underneath is a different matter: real hardware reports motion on its polling clock (95 percent of deltas in our held-out data are exactly 8 ms), the model emits its own timing, and a detector that reads nothing but raw timestamp deltas separates the two trivially.
+
+We tried re-emitting generated paths on the human clock and found it cannot be done after the fact without disturbing the resampled kinematics the rest of the evaluation stands on, so the honest position is disclosure: the result covers movement, not clock forensics. A deployment whose timestamps come from the host's own polling loop sidesteps the channel, and making the generator emit on a clock lattice natively is listed under open directions.
+
+### Recipe selection
+
+The winning selection recipe was chosen from eleven candidates on a proxy metric, which flatters any result, so we confirm it by reproduction. The same recipe runs against independent candidate pools built from different random seeds, and the number only counts if it holds across all of them.
+
+The reported figure is also measured against humans the selection never saw: fitting uses one half of a human reference set, an untouched second half supplies the proxy during tuning, and the final number comes from replaying the winning selection against a separate evaluation sample no part of the process has touched. The gap between the tuning proxy and that held-out figure has stayed within one to two points, which is itself a sign the split is not being gamed.
+
+### External data
 
 One limit we cannot engineer away is external. The model trained on the five public datasets listed below, and those are the only labeled human mouse recordings we have. We have no human data from outside that pool to test against, so the honest claim is that the output is indistinguishable from human movement within this data distribution, not that it would fool a detector trained on some entirely different population of users and hardware. Anyone building on this work should read the headline number with that scope in mind.
 
