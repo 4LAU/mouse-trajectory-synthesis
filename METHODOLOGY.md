@@ -1374,29 +1374,6 @@ worst-case deviation across the whole panel roughly in half, with no loss on the
 original features. Two detectors, the perceptron and logistic regression, still
 sit near 0.54, so the flattening is close to complete but not total.
 
-Three follow-up probes on the last day tested how hard that residual is. A
-three probes:
-
-- A stronger single smooth judge (a lone MLP or logistic model run as a short
-  polish on the confirmed picks) closed the residual on a tuning proxy but gave
-  it back on the honest replay, the winner's curse of selecting the best round
-  of a noisy metric; a control confirmed the residual is real, since two
-  disjoint human samples are mutually indistinguishable under the same smooth
-  detectors.
-- Doubling the candidate pool to 32 movements per spec, on the one seed with a
-  K=32 pool, cut the perceptron detector from 0.550 to 0.521 with the primary
-  at 0.497 and no other detector paying, which locates the perceptron residual
-  as support deficiency (too few candidates to choose from), while the logistic
-  reading held near 0.54 at both pool sizes and reads as a generator-level
-  direction selection cannot remove.
-- Finally, two heavier held-out sequence adversaries on the raw resampled
-  channels, a dilated CNN spanning the full movement and a bidirectional GRU,
-  both stayed at chance (0.509) against the headline picks, closing the depth
-  question the small Raw-NN left open.
-
-All three probes were CPU-only replays on cached pools and did not touch the
-three-seed headline.
-
 The stretch day at the end of the project pushed on both remaining fronts. On
 the raw side, two adversaries far heavier than the suite's small CNN, a
 five-block dilated CNN whose receptive field spans the entire sequence and a
@@ -1415,31 +1392,92 @@ two-layer bidirectional GRU, trained under the same held-out protocol, read
   logistic reading stayed near 0.54 at both pool sizes and under every judge.
 
 The linear direction is something the generator imposes on essentially every
-candidate it emits; closing it is model work, not selection work.
+candidate it emits; closing it is model work, not selection work. A residual
+analysis run on July 8 puts a shape on that direction: standardized logistic
+coefficients are stable across seeds and point at two features, std_jerk and
+curvature_std, both negative, meaning synthetic sits below human on both. The
+deficit lives in the tails rather than the bulk (medians and IQRs match within
+0.02 IQR, while synthetic p99 is 85 percent of human p99 for std_jerk and 56
+percent for curvature_std), squared versions of the features add only about
+0.001 AUC, which rules out a quadratic relationship, and no single
+feature-group ablation removes the residual: the best of them, dropping
+curvature together with angular velocity, still reads 0.516. This is also why
+doubling the candidate pool halves the perceptron residual but leaves the
+logistic residual untouched: a larger pool drawn from the same generator does
+not manufacture the missing tail events.
 
 One channel sits outside this entire panel by construction. All detectors
 here read trajectories after the 125 Hz resample. The raw event stream is
 separable at a glance: 95.3 percent of held-out human timestamp deltas are
-exactly 8 
+exactly 8 ms, the fixed interval of the hardware polling clock, while the
+model emits its own timing. A detector reading nothing but raw timestamp
+deltas separates the two trivially. Re-emitting generated paths on the human
+clock after the fact would fix the tell but would also disturb the resampled
+kinematics that the rest of this evaluation stands on, so the scope of every
+result above is disclosed rather than patched: it covers movement after the
+125 Hz resample, not clock forensics.
 
 Reproduction and the held-out discipline are covered above: independent seeds, a
 reference split whose second half the fitting never touches, and a final number
 replayed against an evaluation sample no part of selection has seen, with a
 proxy-to-honest gap that has stayed inside two points.
 
-The limit the project cannot close is the reference itself. Every human
-trajectory available here, for training and for evaluation, comes from the five
-public datasets the model trained on. The evaluation sample is disjoint from
-what selection saw, which is what makes the held-out number meaningful, but it
-is drawn from the same population and the same recording hardware the model
-learned from. A genuinely external test would need labeled human mouse data from
-a different population, and no such set is available to this project: the public
-sources that would supply it are already in the training pool, and requests to
-others were declined. The defensible claim is therefore bounded. Within the
-distribution these datasets represent, the output is indistinguishable from
-human movement under every detector tried. Whether it would survive a detector
-trained on a different population of users, devices, and polling behavior is
-untested, and the reader should treat it as open.
+The reference population was, until July 8, a limit the project could not
+close: every human trajectory available for training and evaluation came from
+the same five public datasets, and requests for outside data had been
+declined. That changed when two external sets were located and evaluated,
+AdSERP (47 users) and M4D (94 sessions), both dense captures at 50 to 60 Hz.
+Against our synthetics, external humans separate at 0.947 (AdSERP) and 0.920
+(M4D). Read alone, that looks like a failure to generalize. But those same
+external sets separate from our own internal humans by almost exactly the
+same margin, 0.947 and 0.918, ties within 0.002, and the two external human
+sets separate from each other at 0.805. Cross-setup human-versus-human
+separability is large on its own, an instrumentation and environment shift
+that has nothing to do with the generator, so the reading that survives is
+that the synthetics sit exactly where the internal humans sit relative to
+every external set tried. The claim therefore stays scoped to the training
+distribution: a detector trained on a different population still separates
+our synthetics easily, but for the same population-shift reason it separates
+real external humans from our internal humans just as easily. What is still
+missing is external data clean of that instrumentation shift, or a way to
+disentangle the shift from generator error, and the reader should treat that
+distinction as open.
+
+### 7.9c Generalization: six out-of-sample seeds
+
+Seeds 42, 43, and 44 were in play while the winning configuration in 7.9 was
+chosen: the step size, decay, and judge width were all tuned with those three
+seeds visible, so the 0.504 headline measures tuning performance, not
+generalization. Six later seeds, 45 through 50, ran the identical locked
+pipeline with no retuning of any kind.
+
+| Seed | RF OOB | Raw-NN | GBM |
+|---|---|---|---|
+| 45 | 0.5148 | 0.5033 | 0.5211 |
+| 46 | 0.5190 | 0.5077 | 0.5189 |
+| 47 | 0.5221 | 0.5063 | 0.5262 |
+| 48 | 0.5114 | 0.5174 | 0.5271 |
+| 49 | 0.5033 | 0.5036 | 0.5362 |
+| 50 | 0.5087 | 0.5080 | 0.5106 |
+| mean | 0.5132 | 0.508 | 0.523 |
+
+The RF OOB mean is 0.5132 with sd 0.0069, giving a 95 percent t-interval of
+[0.506, 0.520] that excludes 0.50. The pre-registered rule for this situation
+was to report the drift, keep the tuning headline, and once the out-of-sample
+mean firmed above 0.51, always state it alongside the headline rather than in
+place of it. That rule triggered here, so the number this project quotes for
+generalization is about 0.513, and it is reported next to the 0.504 tuning
+headline, never on its own.
+
+The selection loop optimizes against the 33-feature Random Forest family, so
+every RF-family number above is one the selection process could in principle
+have learned to game. The raw-signal NN never took part in any selection
+loop, which makes it the closest independent check available, and its mean
+across the six seeds is 0.508. The GBM mean is 0.523, with a worst single seed
+of 0.5362. Every claim in this document is scoped to the detector families
+actually run, and the sentence this project uses to summarize the six-seed
+result is: fresh out-of-sample tests average 0.513, near chance, across three
+detector families (RF, GBM, raw-signal NN), with a worst case around 0.53.
 
 ### 7.10 Summary of the event-stream era
 
@@ -1451,16 +1489,17 @@ untested, and the reader should treat it as open.
 | Pure event-stream model | 0.652 +/- 0.003 | Three-seed confirmed |
 | + SIR selection | 0.568 +/- 0.010 | Three-seed confirmed |
 | + set-level reselection | 0.504 | Three-seed confirmed, 33-feature judge (18-feature judge: 0.491) |
+| + set-level reselection, out-of-sample | 0.513 | Six-seed mean, 95 percent CI [0.506, 0.520], seeds never used in tuning |
 
 ### 7.11 What is still open
 
 The result rests entirely on selection at inference time. Every attempt to move the judgment into the model's weights failed: plain imitation, anchored imitation, three adversarial fine-tunes, and preference learning all made the pure-model number worse, some of them catastrophically (Section 7.6). The clean statement is that trajectory-level judgment compresses into this architecture as ranking but not as generation. That leaves three directions open, none of which we could close before the project deadline.
 
-The first is reinforcement learning that scores whole trajectories after they are generated, rather than a gradient that reaches back through the sampling step. Every failed fine-tune shared one flaw: it either imitated token targets or pushed gradients through a straight-through relaxation of the sampler, and both drift the model off the human manifold. A method that samples a full trajectory, scores it with the detector, and updates only on that scalar reward (GRPO or RAFT, for example) never touches the sampler's internals and might survive where the others did not. It is the most direct assault on the same wall, and it is untested here.
+The first, reinforcement learning that scores whole trajectories after they are generated rather than a gradient that reaches back through the sampling step, has since been tried and parked. A GRPO pilot ran in July 2026 (full account in EXPERIMENTS.md, July 10-11 entry): no straight-through estimator, a KL leash against the base model, and a reward from a freshly refit Random Forest. It moved the pure-model number from 0.659 to a plateau around 0.638 and stalled there rather than continuing to improve. The decisive result was downstream: pools generated by the RL model made the final set-level selection worse on all three seeds, 0.518 against the 0.504 headline, because RL narrows candidate diversity within a pool, and set-level reselection depends on that diversity to find a good set. So the direction is not closed in principle, but the simple version has been tested and does not help. What remains untried is a judge panel that trains against several detector families at once, and architectures where the reward can shape diversity rather than collapse it.
 
 The second is a different backbone. The masked-token event model was chosen because it can emit an exact stall as a first-class token, which every continuous model could not (Section 5). But the same discreteness that fixed the stall may be what refuses to absorb the judge's signal. An architecture that keeps exact zeros while carrying a continuous latent for movement, rather than binning speed and heading, is a plausible way to get a model whose native output is closer to 0.50 before any selection. Building and training one is weeks of work, not a fine-tune, so it stayed out of scope.
 
-The third is data. The model saw only the five public datasets, and the honest claim is bounded to that distribution (Section 7.9b). Human recordings from outside that pool would do two things at once: widen what the model can learn, and provide the genuinely external test the current evaluation cannot. Both the training gain and the validation are gated on access to labeled human mouse data we do not currently have.
+The third is data. The model saw only the five public datasets it trained on, and until July 8 every claim was bounded to that distribution with no outside test available (Section 7.9b). Two external sets, AdSERP and M4D, have since been located and evaluated, and the reading holds up: the synthetics separate from external humans by about the same margin internal humans do, so the distribution-shift story survives the new data rather than being contradicted by it. What is still missing is external data clean of the instrumentation and environment shift the two external sets show against each other, or a way to disentangle that shift from generator error.
 
 ## 8. Related Work
 
@@ -1549,6 +1588,8 @@ continuous-discrete structure the real data shows.
 | Best fully generative AUC, no selection | 0.652 +/- 0.003 | Pure event-stream model, Section 7.6 |
 | Best honest full-system AUC | 0.568 +/- 0.010 | Event-stream model + SIR selection, Section 7.7 |
 | Best set-level AUC | 0.504 (3-seed) | Event-stream model + set-level reselection, Section 7.9 |
+| Best set-level AUC, out-of-sample | 0.513 (6-seed mean), 95 percent CI [0.506, 0.520] | Seeds never used in tuning, Section 7.9c |
+| Out-of-sample cross-detector reads | Raw-NN mean 0.508, GBM mean 0.523 (worst 0.536) | Section 7.9c |
 | Best retrieval+transform AUC | 0.686 | Corpus rotate (rotation + scale) |
 | Best of the continuous-model era | 0.864 | ZIMT with magnitude-weighted endpoint correction |
 | Intermediate hybrid result | 0.852 | CANDI polar hybrid diffusion |

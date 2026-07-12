@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -75,6 +77,110 @@ def fig_auc_progression():
 
     plt.tight_layout()
     out = FIGURES_DIR / "auc_progression.png"
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved {out}")
+
+
+# Record-progression milestones: best detector AUC achieved to date, in
+# chronological order. Dates come from EXPERIMENTS.md headings (or, for the
+# three earliest entries, the "Initial release" commit date, since the
+# journal did not start dating individual entries until 2026-05-13 and these
+# three predate that). Only points that actually LOWER the running-best AUC
+# are included:
+#   - "## VQ-VAE + Transformer (v145-v146)" (undated, part of the initial
+#     2026-05-03 log): retrained VQ-VAE reaches 0.890, explicitly "still
+#     worse than DDPM baseline (0.86)" (EXPERIMENTS.md line ~404) -> not a
+#     record, excluded.
+#   - "## ZIMT Endpoint Correction & Guided Sampling (2026-05-13)": ZIMT
+#     magcorr reaches 0.864, added after DDPM's 0.862 was already the
+#     standing record -> not a record, excluded.
+AUC_TIMELINE = [
+    ("2026-05-03", 0.998, "Sigma-lognormal baseline"),
+    # "## Generative Research: CFM and Baselines" (undated; initial log).
+    ("2026-05-03", 0.919, "CFM flow matching"),
+    # "## Stall Injection Experiments (v143)" / VQ-VAE summary table both
+    # cite DDPM v135 eta=0 as "Best baseline" at 0.862 (undated; initial log).
+    ("2026-05-03", 0.862, "DDPM diffusion"),
+    # "## Updated Scoreboard (2026-05-27)": CANDI polar DDIM (30ep, CFG=0)
+    # at 0.852, the first generative result under the DDPM 0.862 record.
+    ("2026-05-27", 0.852, "CANDI polar diffusion"),
+    # "## Pure model + empirical duration prior: confirmed at 3 seeds
+    # (July 6, 13:25)": event-stream model, no selection, 0.652 +/- 0.003.
+    ("2026-07-06 13:25", 0.652, "Event-stream (pure)"),
+    # "## New honest best: 0.568 +/- 0.010 at three seeds (July 6, 19:40)".
+    ("2026-07-06 19:40", 0.568, "+ SIR selection"),
+    # "## Protected three-seed confirmation, both judge widths
+    # (July 6, 23:47)": headline decision, 33-dim judge, set-level
+    # reselection, 0.504 three-seed confirmed.
+    ("2026-07-06 23:47", 0.504, "Set-level reselection"),
+]
+
+
+def fig_auc_timeline():
+    """Record-progression chart: best detector AUC achieved to date."""
+    dates = [datetime.strptime(d, "%Y-%m-%d %H:%M") if " " in d
+             else datetime.strptime(d, "%Y-%m-%d")
+             for d, _, _ in AUC_TIMELINE]
+    aucs = [a for _, a, _ in AUC_TIMELINE]
+    labels = [l for _, _, l in AUC_TIMELINE]
+
+    fig, ax = plt.subplots(figsize=(12, 5.5), facecolor="white")
+    ax.set_facecolor("white")
+
+    ax.grid(True, axis="y", color="#e5e5e5", linewidth=0.7, zorder=0)
+    ax.step(dates, aucs, where="post", color="#4040E0", linewidth=2.2,
+            zorder=3)
+    ax.scatter(dates[:-1], aucs[:-1], color="#4040E0", s=45, zorder=4,
+               edgecolor="white", linewidth=0.8)
+    ax.scatter([dates[-1]], [aucs[-1]], color="#2CB25C", s=110, zorder=5,
+               edgecolor="white", linewidth=1.0)
+
+    ax.axhline(y=0.50, color="#E04040", linestyle="--", linewidth=1.6,
+               alpha=0.85, zorder=2)
+    ax.text(dates[0], 0.515,
+            "Chance (0.50): detector cannot tell synthetic from human",
+            color="#E04040", fontsize=9.5, ha="left", fontstyle="italic")
+
+    # Manual per-point offsets (in points) to keep annotations legible and
+    # collision-free given the two dense clusters (May 3 and July 6).
+    offsets = [
+        (10, -16),   # Sigma-lognormal baseline (below, clear of the title)
+        (10, 12),    # CFM flow matching
+        (10, -20),   # DDPM diffusion
+        (10, -18),   # CANDI polar diffusion
+        (-100, 22),  # Event-stream (pure)
+        (-100, -22), # + SIR selection
+    ]
+    for i, (d, auc, label) in enumerate(AUC_TIMELINE[:-1]):
+        dx, dy = offsets[i]
+        ax.annotate(f"{label} {auc:.3f}", xy=(dates[i], aucs[i]),
+                    xytext=(dx, dy), textcoords="offset points",
+                    fontsize=9.5, color="#333333",
+                    ha="left" if dx >= 0 else "right")
+
+    # Final point: placed well clear of the axis and the two preceding
+    # labels, in the open space above the July cluster.
+    ax.annotate("Set-level selection 0.504 (tuning) /\n0.513 (out-of-sample)",
+                xy=(dates[-1], aucs[-1]), xytext=(-70, 175),
+                textcoords="offset points", fontsize=9.5, color="#333333",
+                ha="right", fontweight="bold",
+                arrowprops=dict(arrowstyle="-", color="#999999",
+                                 linewidth=0.8, shrinkA=2, shrinkB=6))
+
+    ax.set_ylim(0.45, 1.02)
+    ax.set_ylabel("Detector AUC (lower is more human-like)", fontsize=11.5)
+    ax.set_title("Best detector AUC over the project (lower is more human-like)",
+                 fontsize=14, fontweight="bold")
+
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+    fig.autofmt_xdate(rotation=0, ha="center")
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    plt.tight_layout()
+    out = FIGURES_DIR / "auc_timeline.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved {out}")
@@ -246,7 +352,8 @@ def fig_feature_distributions():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--figure", choices=["auc", "trajectory", "features", "all"],
+    parser.add_argument("--figure",
+                        choices=["auc", "trajectory", "features", "timeline", "all"],
                         default="all")
     args = parser.parse_args()
 
@@ -256,3 +363,5 @@ if __name__ == "__main__":
         fig_trajectory_overlay()
     if args.figure in ("features", "all"):
         fig_feature_distributions()
+    if args.figure in ("timeline", "all"):
+        fig_auc_timeline()
