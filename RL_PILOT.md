@@ -23,7 +23,7 @@ already failed, on the same underlying wall, from three different angles
   entirely (no sampling inside the training loop), but collapsed off-manifold
   instead. Pure-model RF OOB at N=2000 rose monotonically from the 0.6470
   control to 0.9782 by step 1500 while the internal preference-accuracy
-  metric kept climbing to 0.87 — textbook Goodhart. "The judge's signal is
+  metric kept climbing to 0.87, textbook Goodhart. "The judge's signal is
   real but it is only usable as a filter over finished trajectories, never
   as a gradient into this architecture's weights" (July 6, 18:25).
 
@@ -34,13 +34,13 @@ GRPO is a structurally different mechanism, not a retuned adversarial pass:
    through the log-prob of tokens already sampled (REINFORCE / score
    function), never through the sampling operation itself and never across
    time steps. This is the mechanism that lets a single trajectory-level
-   judgment move every position's weights together — the coordination the
+   judgment move every position's weights together, the coordination the
    adversarial critics needed but structurally could not get.
 2. **The reward model is not a live adversary.** The reward RF is refit only
    every `--refresh-every` iterations and frozen in between. Nothing ever
    differentiates through it (`.predict_proba` only, a black-box scalar).
 3. **Per-token KL penalty against a frozen copy of the pretrained model**
-   (`--beta`, default 0.05) — the explicit leash against the DPO-style
+   (`--beta`, default 0.05), the explicit leash against the DPO-style
    weight-space collapse.
 
 ## Design, as implemented
@@ -54,12 +54,12 @@ split into two passes so the backward never has to hold the whole rollout's
 graph (a single backward over ~100 reveal steps at B=256 would need ~100
 stored forwards alive at once and would OOM the 4070):
 
-- **Pass 1 — `rollout_no_grad`**: the entire rollout under `torch.no_grad`,
+- **Pass 1: `rollout_no_grad`**: the entire rollout under `torch.no_grad`,
   byte-for-byte the same procedure as `model.sample()`, additionally
   recording per reveal step: the input `dt_z`, the reveal mask, the diffusion
   time fed to the trunk, and the temperature-scaled log-prob of the tokens
   revealed at that step (recorded for the pass-2 consistency assert). The
-  (s, dtheta) token input state of any step is NOT stored — tokens never
+  (s, dtheta) token input state of any step is NOT stored, tokens never
   change after reveal, so pass 2 reconstructs each step's inputs from the
   final tokens plus the cumulative reveal masks. Recorded storage at full
   scale (B=256, T=256, ~100 steps) is ~35 MB. Memory profile during pass 1
@@ -67,7 +67,7 @@ stored forwards alive at once and would OOM the 4070):
 - **Decode / reward / advantage**: trajectories are decoded from the final
   tokens (SNAP + ROUND, matching the locked recipe), featurized, scored by
   the frozen reward RF, and per-group z-scored advantages computed.
-- **Pass 2 — `replay_backward`**: each recorded step's forward is rerun WITH
+- **Pass 2: `replay_backward`**: each recorded step's forward is rerun WITH
   grad; that step's partial loss
   `sum_j (-adv_j * logp_step_j + beta * kl_step_j) / (n_j * n_valid)`
   is `backward()`ed immediately, freeing the graph per step. The
@@ -91,14 +91,14 @@ computed inside pass 2, where the policy logits already exist.
 
 All no-grad `model.sample()` calls elsewhere (reward refresh at n=4000, both
 eval tiers at n=500/2000) go through `sample_chunked`, which caps every
-batch at `--sample-batch` (default 500) and concatenates — peak sampling
+batch at `--sample-batch` (default 500) and concatenates, peak sampling
 memory is bounded regardless of the n requested.
 
 ### 2. Groups (GRPO)
 
 Per iteration: `--specs-per-iter` (default 32) distinct specs,
 `--group-size` (G, default 8) trajectories per spec with independent
-movement-character draws — 256 trajectories/iteration by default. Advantage
+movement-character draws, 256 trajectories/iteration by default. Advantage
 is the per-group z-scored reward; log-probs and KLs are length-normalized by
 the decoded real-event count.
 
@@ -129,11 +129,11 @@ temperature = 1, length-normalized, added inside each pass-2 step. The
 reference is always reloaded fresh from `--load-from`, never from a resumed
 checkpoint.
 
-### 5. Eval gate — validation humans, never the eval humans
+### 5. Eval gate: validation humans, never the eval humans
 
 Coordinator-flagged leakage fixed: the previous draft used
 `data/human_eval_features.npy` (the headline eval humans) for in-training
-evals, best-checkpoint choice, and auto-stop — model selection on the eval
+evals, best-checkpoint choice, and auto-stop, model selection on the eval
 sample, which the project's honest-split protocol forbids (the July 5 SIR
 leakage audit fixed exactly this on the selection side).
 
@@ -143,7 +143,7 @@ The trainer now builds a **validation human sample** at startup
 
 - 2000 rows drawn from the 4.16M pool with a fresh seed (`--val-seed`,
   default 20260709);
-- the 2000 seed-42 **eval indices excluded by index** — the eval draw is
+- the 2000 seed-42 **eval indices excluded by index**, the eval draw is
   reproduced exactly as `regenerate_human_features.py` /
   `experiments/novelty_check.py` do it, and the build asserts that the
   reconstructed indices regenerate the cached eval features (first rows,
@@ -151,13 +151,13 @@ The trainer now builds a **validation human sample** at startup
 - rows matching the reward reference **excluded by feature match** (18-dim
   vector rounded to 6 decimals), because the SIR file's indices are not
   recoverable (see provenance above). The smoke-test build dropped exactly
-  2 such rows out of ~2000 drawn — consistent with the ~2 expected chance
+  2 such rows out of ~2000 drawn, consistent with the ~2 expected chance
   collisions of a 2000-row draw against 4000 rows out of 4.16M, so the
   screening is doing precisely the job index-exclusion would have done.
   Residual risk: a reward-reference trajectory whose features changed if
   `features.py` was modified after the SIR file was built would evade the
   match; this is a validation-vs-reward overlap (mild optimism in the
-  validation AUC at worst), NOT eval leakage — the eval humans are excluded
+  validation AUC at worst), NOT eval leakage, the eval humans are excluded
   by index, which is exact.
 
 Every `--eval-every` (25) iterations: N=500 eval vs validation humans,
@@ -166,12 +166,12 @@ labeled TREND-ONLY (small-N reads ~0.3 optimistic). Every `--eval-big-every`
 (synthetic p99 / human p99 for `std_jerk` and `curvature_std`).
 
 **Final-number protocol**: `data/human_eval_features.npy` is used exactly
-once, manually, after training ends — run the standard `evaluate.py` on the
+once, manually, after training ends, run the standard `evaluate.py` on the
 best checkpoint. The 0.6470 baseline was measured against the eval humans,
 so in-training validation numbers are compared to the run's own iter-0
 baseline; 0.6470 is printed as a reference line only.
 
-### 6. Auto-stop — anchored at iter 0, patience 3 big evals
+### 6. Auto-stop: anchored at iter 0, patience 3 big evals
 
 Before the first update (fresh runs only), one N=2000 baseline eval records
 the starting AUC and starting tail ratios; `best_auc` starts there. A big
@@ -210,7 +210,7 @@ under sustained GPU load.
 4. **TICKMERGE left out of the copied decode** (cosmetic, off by default in
    the experiment file too; SNAP and ROUND kept).
 5. **Eval gate humans**: validation sample from the training pool, not the
-   spec's "held-out humans" — using the actual held-out eval humans for
+   spec's "held-out humans", using the actual held-out eval humans for
    in-training selection would be leakage (coordinator fix 2). The eval
    humans are reserved for one manual post-training run.
 6. **Auto-stop**: iter-0-anchored thresholds with patience 3 big evals
@@ -301,7 +301,7 @@ headline number against the untouched eval humans.
 
 Per training iteration at full settings (B=256, ~100 reveal steps):
 
-- pass 1: 1 policy forward per step (no grad) — same cost as plain sampling;
+- pass 1: 1 policy forward per step (no grad), same cost as plain sampling;
 - pass 2: 1 policy forward with grad + 1 frozen-reference forward (no grad)
   + 1 backward (~2 forward-equivalents) per step;
 - total ~5 forward-equivalents per step vs 1 for plain sampling.
@@ -310,15 +310,18 @@ Anchor: this project's measured 4070 sampling throughput is ~1.17 s/spec at
 K=16 (EXPERIMENTS.md "Distillation build"), i.e. ~0.073 s per full 100-step
 trajectory, so plain generation of 256 trajectories is ~19 s. Times 5:
 **~95 s/iteration, so roughly 2.5-3 h per 100 iterations** including the
-amortized overheads (reward refresh: 4000 chunked samples every 50 iters,
-~5 min; N=500 eval every 25 iters, ~40 s; N=2000 eval every 100 iters,
-~2.5 min + RF fits). With `--max-hours 1.5` that is ~50-60 iterations per
-supervised burst. This is an extrapolation from measured sampling
-throughput, not a GPU measurement (no GPU run was permitted for this task);
-re-derive from the first real burst's log before trusting any budget.
-CPU at full settings is impractical (observed ~20 s/iter at B=8 with 8
-steps; scaling to B=256 at 100 steps is on the order of an hour per
-iteration) — CPU is smoke-test-only.
+amortized overheads:
+
+- reward refresh: 4000 chunked samples every 50 iters, ~5 min
+- N=500 eval every 25 iters, ~40 s
+- N=2000 eval every 100 iters, ~2.5 min + RF fits
+
+With `--max-hours 1.5` that is ~50-60 iterations per supervised burst. This
+is an extrapolation from measured sampling throughput, not a GPU measurement
+(no GPU run was permitted for this task); re-derive from the first real
+burst's log before trusting any budget. CPU at full settings is impractical
+(observed ~20 s/iter at B=8 with 8 steps; scaling to B=256 at 100 steps is
+on the order of an hour per iteration). CPU is smoke-test-only.
 
 ## Open risks for the real run
 

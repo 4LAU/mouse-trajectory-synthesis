@@ -994,8 +994,11 @@ stall, and the direction the hand takes after it) while keeping full-sequence,
 bidirectional context available at every generation step. That means moving
 away from a sequence of quantized (dx, dy) pairs and toward a sequence of
 motion events: a speed, a heading change relative to the previous heading, and
-the time until the next event. The mouse hardware itself already reports data
-this way. Pool files retained from data preparation turned out to hold the raw,
+the time until the next event.
+
+The mouse hardware itself already reports data this way.
+
+Pool files retained from data preparation turned out to hold the raw,
 pre-resample event stream (integer pixel positions with millisecond
 timestamps), not just the 125 Hz resampled grid used for feature extraction.
 Only about 30% of inter-event gaps sit on the nominal 8ms polling clock; the
@@ -1143,22 +1146,25 @@ selection step of any kind. Checkpoint event_polar_4m_fc_v2.pt.
 At this point a natural next step is to take the selection mechanism described
 in Sections 7.7 and 7.8 and bake its preference directly into the weights,
 rather than running it at inference time. Four independent ways of doing this
-were tried, and all four failed in the same way. Plain imitation
-distillation (fine-tune on the winning candidate from a sampled pool, using the
-exact pretraining objective) made every checkpoint worse than the model it
-started from, with most of the damage done within the first few hundred steps.
-Mixing real human batches back in as an anchor changed the shape of the
-degradation but not its direction. A conditioned adversarial critic (the plain
-critic from Section 7.5, rerun with the character vector active so the
-generator had a pathway to act on the criticism) also regressed the score, with
-the discriminator's real-versus-fake margin growing steadily while the
-generator closed none of it. Preference learning (Diffusion-DPO: contrast the
-judge's best and worst candidate per movement, train against a frozen reference
-copy of the model) is the most informative failure: preference accuracy on held
-out pairs climbed cleanly from 0.50 to 0.87, so the model genuinely absorbed the
-judge's ranking, while generation quality collapsed monotonically and
-increasingly steeply as training continued (RF OOB rose from the 0.647 control
-past 0.86 by step 500 and past 0.96 by step 1000).
+were tried, and all four failed in the same way:
+
+- Plain imitation distillation (fine-tune on the winning candidate from a
+  sampled pool, using the exact pretraining objective) made every checkpoint
+  worse than the model it started from, with most of the damage done within the
+  first few hundred steps.
+- Mixing real human batches back in as an anchor changed the shape of the
+  degradation but not its direction.
+- A conditioned adversarial critic (the plain critic from Section 7.5, rerun
+  with the character vector active so the generator had a pathway to act on the
+  criticism) also regressed the score, with the discriminator's real-versus-fake
+  margin growing steadily while the generator closed none of it.
+- Preference learning (Diffusion-DPO: contrast the judge's best and worst
+  candidate per movement, train against a frozen reference copy of the model)
+  is the most informative failure: preference accuracy on held out pairs climbed
+  cleanly from 0.50 to 0.87, so the model genuinely absorbed the judge's ranking,
+  while generation quality collapsed monotonically and increasingly steeply as
+  training continued (RF OOB rose from the 0.647 control past 0.86 by step 500
+  and past 0.96 by step 1000).
 
 The common mechanism is architectural, not a tuning failure. This model's
 training objective is to get each token's marginal distribution right at each
@@ -1369,39 +1375,47 @@ original features. Two detectors, the perceptron and logistic regression, still
 sit near 0.54, so the flattening is close to complete but not total.
 
 Three follow-up probes on the last day tested how hard that residual is. A
-stronger single smooth judge (a lone MLP or logistic model run as a short
-polish on the confirmed picks) closed the residual on a tuning proxy but gave
-it back on the honest replay, the winner's curse of selecting the best round
-of a noisy metric; a control confirmed the residual is real, since two
-disjoint human samples are mutually indistinguishable under the same smooth
-detectors. Doubling the candidate pool to 32 movements per spec, on the one
-seed with a K=32 pool, cut the perceptron detector from 0.550 to 0.521 with
-the primary at 0.497 and no other detector paying, which locates the
-perceptron residual as support deficiency (too few candidates to choose from),
-while the logistic reading held near 0.54 at both pool sizes and reads as a
-generator-level direction selection cannot remove. Finally, two heavier
-held-out sequence adversaries on the raw resampled channels, a dilated CNN
-spanning the full movement and a bidirectional GRU, both stayed at chance
-(0.509) against the headline picks, closing the depth question the small
-Raw-NN left open. All three probes were CPU-only replays on cached pools and
-did not touch the three-seed headline.
+three probes:
+
+- A stronger single smooth judge (a lone MLP or logistic model run as a short
+  polish on the confirmed picks) closed the residual on a tuning proxy but gave
+  it back on the honest replay, the winner's curse of selecting the best round
+  of a noisy metric; a control confirmed the residual is real, since two
+  disjoint human samples are mutually indistinguishable under the same smooth
+  detectors.
+- Doubling the candidate pool to 32 movements per spec, on the one seed with a
+  K=32 pool, cut the perceptron detector from 0.550 to 0.521 with the primary
+  at 0.497 and no other detector paying, which locates the perceptron residual
+  as support deficiency (too few candidates to choose from), while the logistic
+  reading held near 0.54 at both pool sizes and reads as a generator-level
+  direction selection cannot remove.
+- Finally, two heavier held-out sequence adversaries on the raw resampled
+  channels, a dilated CNN spanning the full movement and a bidirectional GRU,
+  both stayed at chance (0.509) against the headline picks, closing the depth
+  question the small Raw-NN left open.
+
+All three probes were CPU-only replays on cached pools and did not touch the
+three-seed headline.
 
 The stretch day at the end of the project pushed on both remaining fronts. On
 the raw side, two adversaries far heavier than the suite's small CNN, a
 five-block dilated CNN whose receptive field spans the entire sequence and a
 two-layer bidirectional GRU, trained under the same held-out protocol, read
 0.509 each against the reported selection. On the smooth side, three results.
-Stronger single smooth judges (an MLP alone, a logistic model alone, and strict
-alternation with the forest) win at proxy level and give the win back on the
-honest replay, so the residual is not a tuning artifact we failed to chase.
-A control shows disjoint human samples are mutually indistinguishable under
-the same smooth detectors (0.48 to 0.52), so the residual is a genuine
-property of the synthetic set, not human sampling noise. And doubling the
-candidate pool to K=32 on the one seed that had such a pool cut the perceptron
-to 0.521 with the primary at 0.497, while the logistic reading stayed near
-0.54 at both pool sizes and under every judge. The linear direction is
-something the generator imposes on essentially every candidate it emits;
-closing it is model work, not selection work.
+
+- Stronger single smooth judges (an MLP alone, a logistic model alone, and
+  strict alternation with the forest) win at proxy level and give the win back
+  on the honest replay, so the residual is not a tuning artifact we failed to
+  chase.
+- A control shows disjoint human samples are mutually indistinguishable under
+  the same smooth detectors (0.48 to 0.52), so the residual is a genuine
+  property of the synthetic set, not human sampling noise.
+- And doubling the candidate pool to K=32 on the one seed that had such a
+  pool cut the perceptron to 0.521 with the primary at 0.497, while the
+  logistic reading stayed near 0.54 at both pool sizes and under every judge.
+
+The linear direction is something the generator imposes on essentially every
+candidate it emits; closing it is model work, not selection work.
 
 One channel sits outside this entire panel by construction. All detectors
 here read trajectories after the 125 Hz resample. The raw event stream is
