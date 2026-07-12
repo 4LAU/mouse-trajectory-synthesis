@@ -3621,7 +3621,7 @@ The full table, RF OOB, config f20d85_r30_rf:
 The out-of-sample interval excludes 0.50.
 
 The July 8-9 entry pre-registered a rule for exactly this situation:
-report drift honestly, keep the three-seed headline. That rule has a
+report the drift, keep the three-seed headline. That rule has a
 second half, and it is now triggered. With the out-of-sample mean firmed
 up above 0.51 and its interval no longer touching chance, the
 documentation has to state the generalization number, about 0.513,
