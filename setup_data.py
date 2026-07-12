@@ -35,7 +35,6 @@ RELEASE_ASSETS = [
     "trajectory_transformer_best.pt",
     "human_eval_features.npy",
     "human_distances.npy",
-    "train_conditions.npy",
 ]
 
 OPTIONAL_ASSETS = [
@@ -58,6 +57,7 @@ REPRO_ASSETS_ROOT = [
 
 REPRO_ASSETS_TRAINING = [
     "event_polar_4m_fc_v2.pt",
+    "train_conditions.npy",
 ]
 
 # Balabit dataset

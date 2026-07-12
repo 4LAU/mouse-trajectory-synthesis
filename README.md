@@ -30,8 +30,16 @@ pip install -e .
 
 1. **Install the project.** The three commands above clone the repository, move into it, and install its Python dependencies.
 2. **Download the data.** `python setup_data.py` pulls the trained model checkpoints, the evaluation data, and a bundle of cached results, all from the GitHub release, into `./data` and a couple of expected root locations. Nothing here requires a GPU.
-3. **Check the headline number.** `python verify_headline.py` replays the cached, already-selected trajectories for three seeds through the same evaluator used throughout the project and confirms each one matches the published score. It runs on CPU in about two minutes and never touches the model itself.
-4. **Generate trajectories.** The command below samples fresh trajectories from the trained model and prints the detector's AUC against held-out human data. On its own the model lands around 0.65; the selection step that closes the rest of the gap is a separate offline process, described under Reproduce below.
+3. **Generate a trajectory.** Give the model a start point and an end point in screen pixels; it returns a human-like path between them.
+
+   ```bash
+   python generate.py 200 600 1500 300
+   ```
+
+   That prints a list of `{"x", "y", "delay"}` points, where `delay` is the wait in milliseconds before each move, ready to feed straight into an input-replay layer. The path starts exactly on the start point and ends exactly on the end point. Add `--n 5` for several variations, `--seed 7` to make a run repeatable, `--format csv` for spreadsheet-friendly output, or `--plot out.png` to save a picture of the paths. It runs on CPU in a couple of seconds. From Python, `from generate import generate` gives you the same thing as arrays.
+
+4. **Check the headline number.** `python verify_headline.py` replays the cached, already-selected trajectories for three seeds through the same evaluator used throughout the project and confirms each one matches the published score. It runs on CPU in about two minutes and never touches the model itself.
+5. **Measure the detector against fresh samples.** The command below samples new trajectories straight from the model and prints the detector's AUC against held-out human data. On its own the model lands around 0.65; the selection step that closes the rest of the gap is a separate offline process, described under Reproduce below.
 
    ```bash
    EVENT_CKPT=event_polar_4m_fc_v2.pt EVENT_ORDER=gumbel EVENT_CHOICE_TEMP=10 \
@@ -39,7 +47,7 @@ pip install -e .
    python evaluate.py --experiment experiments.event_stream_polar --no-raw-nn
    ```
 
-Everything above runs on CPU. Generating new trajectories from the checkpoint (step 4) is faster with a GPU; see [pytorch.org](https://pytorch.org/get-started/locally/) for a CUDA-enabled install if you have one.
+Everything above runs on CPU. Generating trajectories is fast either way; the checkpoint sampling in steps 3 and 5 is quicker with a GPU, see [pytorch.org](https://pytorch.org/get-started/locally/) for a CUDA-enabled install if you have one.
 
 ## Results
 
@@ -116,6 +124,7 @@ Developed on an RTX 4070 (12GB VRAM). A single consumer GPU is sufficient for al
 
 ```
 MIME-mouse/
+├── generate.py                       # Start point + end point in, human-like trajectory out (the main entry point)
 ├── evaluate.py                       # Adversarial evaluator (RF OOB AUC, GBM CV, raw-NN)
 ├── features.py                       # 18 kinematic feature extractors
 ├── event_codec.py                    # Event-stream encode/decode
