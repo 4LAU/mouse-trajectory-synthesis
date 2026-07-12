@@ -292,6 +292,119 @@ def fig_trajectory_overlay():
     print(f"Saved {out}")
 
 
+def fig_trajectory_comparison():
+    """BeCAPTCHA-style dot grid: human vs generated vs scripted bot.
+
+    Every recorded sample is drawn as a dot, so point spacing shows the
+    velocity profile. Needs a local clone of the Balabit dataset for the
+    human row; set BALABIT_DIR to its path (the clone is not part of this
+    repo). Skips with a message when the clone is missing.
+    """
+    import os
+    from setup_data import _parse_balabit_file, _segment_movements
+
+    balabit = Path(os.environ.get("BALABIT_DIR", "Mouse-Dynamics-Challenge"))
+    files = sorted(balabit.glob("training_files/*/session_*"))
+    if not files:
+        print("Skipping trajectory_comparison: no Balabit clone found. "
+              "Clone https://github.com/balabit/Mouse-Dynamics-Challenge and "
+              "set BALABIT_DIR to its path.")
+        return
+
+    rng = np.random.default_rng(11)
+    rng.shuffle(files)
+    humans = []
+    for f in files[:60]:
+        events = _parse_balabit_file(f)
+        humans.extend(_segment_movements(events))
+        if len(humans) > 3000:
+            break
+    hxy = [np.asarray(t, dtype=np.float64)[:, :2] for t in humans]
+    hd = np.array([np.hypot(*(p[-1] - p[0])) for p in hxy])
+    hl = np.array([len(p) for p in hxy])
+
+    gen_trajs, _ = _load_selected_pool()
+    gens = [t[:, :2] for t in gen_trajs]
+    gd = np.array([np.hypot(*(g[-1] - g[0])) for g in gens])
+    gl = np.array([len(g) for g in gens])
+
+    def norm(p):
+        # Rotate/scale so start=(0,0), end=(1,0); keeps shape and spacing.
+        p = p - p[0]
+        v = p[-1]
+        L = np.hypot(*v)
+        c, s = v / L
+        R = np.array([[c, s], [-s, c]])
+        return (p @ R.T) / L
+
+    def fits(p, ymax=0.24):
+        # Typical point-to-point movement: stays near the frame, no huge jumps.
+        q = norm(p)
+        steps = np.hypot(*np.diff(q, axis=0).T)
+        return (np.abs(q[:, 1]).max() < ymax
+                and q[:, 0].min() > -0.06 and q[:, 0].max() < 1.06
+                and steps.max() < 0.12)
+
+    # Four movements across distance bands, median example within each band.
+    cols = []
+    used_h = set()
+    for q in (30, 55, 75, 92):
+        target = np.percentile(gd, q)
+        band = np.where((np.abs(gd - target) < 0.10 * target)
+                        & (gl >= 25) & (gl <= 70))[0]
+        band = [i for i in band if fits(gens[i])]
+        gi = int(band[len(band) // 2])
+        hb = np.where((np.abs(hd - gd[gi]) < 0.10 * gd[gi])
+                      & (hl >= 25) & (hl <= 120))[0]
+        hb = [i for i in hb if i not in used_h and fits(hxy[i])]
+        hi = int(hb[len(hb) // 2])
+        used_h.add(hi)
+        cols.append((hi, gi))
+
+    fig, axes = plt.subplots(3, 4, figsize=(13, 4.4), facecolor="white",
+                             gridspec_kw={"hspace": 0.05, "wspace": 0.08})
+    rows = [
+        ("Recorded human\n(Balabit)", "#2CB25C"),
+        ("This project's model", "#4040E0"),
+        ("Scripted bot\n(straight, constant speed)", "#E04040"),
+    ]
+    for j, (hi, gi) in enumerate(cols):
+        h = norm(hxy[hi])
+        g = norm(gens[gi])
+        n = len(g)
+        bot = np.stack([np.linspace(0, 1, n), np.zeros(n)], axis=1)
+        for i, p in enumerate([h, g, bot]):
+            ax = axes[i, j]
+            color = rows[i][1]
+            ax.plot(p[:, 0], p[:, 1], color=color, linewidth=1.0, alpha=0.45,
+                    zorder=2)
+            ax.scatter(p[:, 0], p[:, 1], s=9, color=color, zorder=3)
+            ax.scatter([0], [0], s=36, facecolor="white", edgecolor="#555555",
+                       zorder=4)
+            ax.scatter([1], [0], s=36, facecolor="#555555", edgecolor="#555555",
+                       zorder=4)
+            ax.set_xlim(-0.12, 1.12)
+            ax.set_ylim(-0.30, 0.30)
+            ax.set_aspect("equal")
+            ax.axis("off")
+    for i, (label, color) in enumerate(rows):
+        axes[i, 0].text(-0.04, 0.5, label, transform=axes[i, 0].transAxes,
+                        fontsize=11, color=color, ha="right", va="center",
+                        fontweight="bold")
+    fig.suptitle("Point-to-point mouse movements, drawn dot by dot: "
+                 "spacing shows speed", fontsize=13, fontweight="bold")
+    fig.text(0.5, 0.015,
+             "Each dot is one recorded sample. Humans accelerate unevenly, "
+             "drift off the direct line, and bunch dots where they slow or stall.",
+             ha="center", fontsize=9.5, color="#555555")
+    fig.subplots_adjust(left=0.20, right=0.99, top=0.88, bottom=0.10,
+                        hspace=0.05, wspace=0.08)
+    out = FIGURES_DIR / "trajectory_comparison.png"
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    print(f"Saved {out}")
+
+
 def fig_feature_distributions():
     """Violin plots: human eval features vs the selected generated set."""
     from features import FEATURE_NAMES
@@ -353,7 +466,8 @@ def fig_feature_distributions():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--figure",
-                        choices=["auc", "trajectory", "features", "timeline", "all"],
+                        choices=["auc", "trajectory", "comparison", "features",
+                                 "timeline", "all"],
                         default="all")
     args = parser.parse_args()
 
@@ -361,6 +475,8 @@ if __name__ == "__main__":
         fig_auc_progression()
     if args.figure in ("trajectory", "all"):
         fig_trajectory_overlay()
+    if args.figure in ("comparison", "all"):
+        fig_trajectory_comparison()
     if args.figure in ("features", "all"):
         fig_feature_distributions()
     if args.figure in ("timeline", "all"):

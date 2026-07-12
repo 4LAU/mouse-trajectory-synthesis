@@ -6,6 +6,10 @@
 
 Bots and scripts move a mouse cursor in ways that give them away. Real human movement has a signature: it accelerates and decelerates unevenly, curves slightly off the direct line, and even pauses mid-motion for a few milliseconds before continuing. Synthetic movement, the straight lines and smooth curves a script generates, looks nothing like that up close, which is why detection systems can catch it.
 
+![Recorded human, this project's model, and a scripted bot, drawn dot by dot](figures/trajectory_comparison.png)
+
+The picture above shows the difference. Each dot is one recorded sample of cursor position, so the spacing between dots shows speed. The top row is a real person (from the public Balabit dataset), the middle row is this project's model, and the bottom row is what a naive script produces.
+
 This project asks a narrower question: starting from nothing but a start point and an end point, can a generative model learn to produce a cursor path that a detector built to catch synthetic movement cannot tell apart from a real human's? The detector here is a Random Forest trained on 18 measurements of a movement's shape (its speed, acceleration, jerk, curvature, and so on). Random guessing on a two-way choice scores 0.50 on this test (AUC); the detector started this project at 0.998, meaning it could spot the synthetic paths almost every time. Over about two months and 200+ experiments, that number came down to roughly 0.51, which is close to random guessing.
 
 ![Detector AUC over the course of the project](figures/auc_timeline.png)
