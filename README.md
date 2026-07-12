@@ -4,130 +4,79 @@
 
 # Mouse Trajectory Synthesis
 
-Generative modeling of human mouse trajectories. Given only a start and end coordinate, synthesize a realistic cursor path with human-like kinematics. Includes an adversarial evaluation framework, a corpus replay baseline, and 200+ experiments across 9 architecture families.
+Bots and scripts move a mouse cursor in ways that give them away. Real human movement has a signature: it accelerates and decelerates unevenly, curves slightly off the direct line, and even pauses mid-motion for a few milliseconds before continuing. Synthetic movement, the straight lines and smooth curves a script generates, looks nothing like that up close, which is why detection systems can catch it.
 
-## Key Insight
+This project asks a narrower question: starting from nothing but a start point and an end point, can a generative model learn to produce a cursor path that a detector built to catch synthetic movement cannot tell apart from a real human's? The detector here is a Random Forest trained on 18 measurements of a movement's shape (its speed, acceleration, jerk, curvature, and so on). Random guessing on a two-way choice scores 0.50 on this test (AUC); the detector started this project at 0.998, meaning it could spot the synthetic paths almost every time. Over about two months and 200+ experiments, that number came down to roughly 0.51, which is close to random guessing.
 
-**Human mouse movements aren't purely continuous.**
+![Detector AUC over the course of the project](figures/auc_timeline.png)
 
-At 125 Hz sampling, 6.14% of all samples are exact zero-displacement stalls: the cursor sits perfectly still for one or more frames before moving again. These stalls happen at specific points during movement (direction changes, deceleration phases) and they produce essentially all of the measured curvature signal in the trajectory.
+The rest of this page explains how to run it yourself, what the result actually is, and where it still falls short.
 
-Continuous models (diffusion, flow matching, GRUs) output probability distributions over real-valued coordinates. They can get arbitrarily close to zero displacement, but they cannot produce exact zeros, so every continuous model we tested plateaus somewhere between AUC 0.86 and 1.0.
+## Quick start
 
-The way through turned out to be a discrete one: encode each trajectory as a stream of events (a speed bin, a heading-increment bin, and an inter-event time), with the stall represented as a first-class zero-speed token instead of a rounding error. A masked-token model (MaskGIT-style, the same family used for parallel audio and image generation) trained on 4 million of these event streams gets almost all the way to indistinguishable from real recordings.
-
-Two things mattered as much as the architecture itself:
-
-- The decoder has to respect the integer pixel grid the recording device actually writes to (leaving positions off-lattice alone costs about 0.05 AUC).
-- Once the model's own kinematics were good enough, the remaining gap turned out to be a selection problem, not a generation problem. Given several candidate movements for the same start and end point, picking which one to keep, using a detector-matched judge that looks at the whole selected population rather than one candidate at a time, closed most of what was left.
-
-![Generated Trajectories](figures/trajectory_overlay.png)
-
-> For the full analysis - the discrete stall discovery, why every continuous model family hits a ceiling, the event-stream architecture, and the selection-as-a-set-problem result - see **[METHODOLOGY.md](METHODOLOGY.md)**.
-
-## Results
-
-All numbers are OOB Random Forest AUC on 18 kinematic features (n=2000 synthetic). Lower is better: 0.50 means the classifier can't tell human from synthetic.
-
-| Approach | AUC | Type | What it tells us |
-|---|---|---|---|
-| Corpus replay | 0.51 | Retrieval | Theoretical floor: real trajectories, translated to match endpoints |
-| Event replay (encode/decode round trip) | 0.507 | Retrieval | Real trajectories pushed through the event representation; confirms the representation is essentially lossless |
-| ZIMT (magcorr) | 0.864 | Generative (historical) | Best result of the continuous-model era: causal Transformer + MDN + stall gate |
-| Event-stream model (pure) | 0.652 | Generative | Masked-token event model alone, no selection: RF OOB 0.652 +/- 0.003 across 3 seeds |
-| + SIR selection | 0.568 | Generative + selection | 16 candidates per movement, per-item tempered lottery against a GBM judge: 0.568 +/- 0.010 across 3 seeds |
-| + set-level reselection | **0.504** | **Generative + selection** | **An iterated adversarial loop that judges the whole selected population, not one candidate at a time. Three-seed confirmed (0.5095 / 0.5030 / 0.4993), chance level on the primary detector.** |
-
-**0.652 is the current best result for a single generative model with no selection step.** It ships only learned weights (about 25 MB), needs no recorded trajectory data at inference time, and every output is model-generated.
-
-**0.568 is the honest, multi-seed-confirmed best for the full system with per-item selection** (one candidate chosen at a time).
-
-Moving to set-level reselection, where the judge scores the whole selected population rather than each candidate alone, reaches **0.504** across three seeds (0.5095 / 0.5030 / 0.4993), chance level on the primary detector. That recipe uses a judge widened to the 15 raw-signal features a detector reads directly, which closes the raw-signal channel to 0.509 and holds every tree and nearest-neighbor detector within about 0.014 of chance.
-
-A narrower 18-feature judge reaches 0.491 on the same three seeds but leaves the raw-signal detector at 0.529; we report the wider judge because it removes that opening. The one residual both recipes leave is a set of linear and MLP detectors on the summary features, which still read about 0.54 (see Validity and limitations).
-
-![AUC by Architecture Family](figures/auc_progression.png)
-
-![Feature Distribution Comparison](figures/feature_distributions.png)
-
-## Problem Statement
-
-Can generative models capture full human motor kinematics without access to a trajectory corpus at inference time?
-
-Corpus replay works but requires shipping real user movement data: a privacy risk, a large deployment footprint, and a finite set of trajectories an adversary could fingerprint. A generative model ships only learned weights, produces unique trajectories on every call, and needs no access to real user data at inference time.
-
-Human motor control produces trajectories with statistical signatures that continuous generative architectures can't fully reproduce, because the signal itself is mixed continuous-discrete: smooth motion punctuated by exact stops. The event-stream model in this repository is built around that fact directly, and the story of getting there, and of how much further selection alone could close the gap, is the subject of this repository.
-
-## Evaluation
-
-The evaluation is adversarial: a Random Forest classifier tries to distinguish generated trajectories from real ones. Lower AUC means more human-like generation.
-
-- **18 kinematic features** spanning the full motor control stack (velocity, acceleration, jerk, curvature, angular velocity, direction changes, path efficiency, movement duration)
-- **Random Forest OOB AUC**: no held-out split needed, adversarial by construction, cross-validated against GBM and a raw-trajectory nearest-neighbor detector to make sure the result isn't an artifact of one classifier
-- **Distributed feature importance**: no single feature dominates, so generation must be realistic across the full kinematic profile
-
-## Validity and limitations
-
-A number this close to 0.50 invites a fair question: did we make trajectories more human, or did we just learn to beat the one classifier we grade with? We took that seriously, and the honest answer has both a solid part and a real limit.
-
-### Memorization
-
-Start with what the result is not. It is not a model memorizing its training data. The 6M-parameter network is frozen, and nothing about the final number touches its weights. The model produces 16 to 32 candidate movements for each start and end point, and an adversarial loop keeps the subset whose population statistics look most human. We are choosing among trajectories the model already generates, so the classic overfitting failure does not apply to this step.
-
-### Judge overfitting
-
-The sharper risk is that we tuned the selection judge against a Random Forest and then report a Random Forest score. On its own that could mean we learned to fool one classifier rather than to look human. So we ran six detector families that never saw the tuning: gradient boosting, extra-trees, a neural network, logistic regression, a histogram gradient booster, and a detector that reads the raw speed signal directly instead of the summary features. Against the reported judge they span 0.484 to 0.55.
-
-The raw-signal detector was the sharpest test, because "just look at the raw speeds" is the most obvious attack: a narrower judge left it at 0.583, and widening the judge to cover those raw features brought it down to 0.484 with no cost to the tree detectors. We also trained two heavier sequence models on the raw resampled trajectories, a dilated CNN with a receptive field spanning the whole movement and a bidirectional GRU, and both stayed at chance (0.509) against the reported selection.
-
-What remains is the neural-network and logistic detectors on the summary features, still near 0.54 rather than a dead 0.50, so a small amount of detectable structure is left and we would rather say so than round it away. Doubling the candidate pool to 32 per movement cut the neural-network detector to 0.52 on the one seed we could test, but the logistic reading persisted, so we treat it as a property of the generator that selection cannot remove.
-
-### Clock forensics
-
-One scope boundary deserves its own sentence. Every detector above reads trajectories after a 125 Hz resample, which is where the kinematic claim lives. The raw event stream underneath is a different matter: real hardware reports motion on its polling clock (95 percent of deltas in our held-out data are exactly 8 ms), the model emits its own timing, and a detector that reads nothing but raw timestamp deltas separates the two trivially.
-
-We tried re-emitting generated paths on the human clock and found it cannot be done after the fact without disturbing the resampled kinematics the rest of the evaluation stands on, so the honest position is disclosure: the result covers movement, not clock forensics. A deployment whose timestamps come from the host's own polling loop sidesteps the channel, and making the generator emit on a clock lattice natively is listed under open directions.
-
-### Recipe selection
-
-The winning selection recipe was chosen from eleven candidates on a proxy metric, which flatters any result, so we confirm it by reproduction. The same recipe runs against independent candidate pools built from different random seeds, and the number only counts if it holds across all of them.
-
-The reported figure is also measured against humans the selection never saw: fitting uses one half of a human reference set, an untouched second half supplies the proxy during tuning, and the final number comes from replaying the winning selection against a separate evaluation sample no part of the process has touched. The gap between the tuning proxy and that held-out figure has stayed within one to two points, which is itself a sign the split is not being gamed.
-
-### External data
-
-One limit we cannot engineer away is external. The model trained on the five public datasets listed below, and those are the only labeled human mouse recordings we have. We have no human data from outside that pool to test against, so the honest claim is that the output is indistinguishable from human movement within this data distribution, not that it would fool a detector trained on some entirely different population of users and hardware. Anyone building on this work should read the headline number with that scope in mind.
-
-## Open directions
-
-The result lives at inference time. Every attempt to fold the selection judgment into the model's weights failed (imitation, three adversarial variants, and preference learning all made the pure model worse), so the frozen model plus a filter is not a shortcut, it is the only mechanism that worked. Three doors are still open, and none fit inside the project timeline:
-
-- **Trajectory-level reinforcement learning.** Score a whole generated path and update on that reward alone, avoiding the gradient-through-the-sampler flaw that broke every fine-tune. The most direct route to a model that reaches 0.50 on its own.
-- **A different backbone.** The masked-token design fixed the exact-stall problem but seems to be what refuses the judge's signal. An architecture with exact zeros and a continuous movement latent might generate closer to human before any selection.
-- **Out-of-distribution human data.** New labeled recordings would both widen what the model can learn and supply the genuinely external test this evaluation cannot. See [METHODOLOGY.md](METHODOLOGY.md) section 7.11 for the full write-up.
-
-## Quick Start
+Each step below does one thing. Run them in order from a fresh clone.
 
 ```bash
 git clone https://github.com/4LAU/mouse-trajectory-synthesis.git
 cd mouse-trajectory-synthesis
 pip install -e .
-python setup_data.py                                            # checkpoints + eval data + 0.504 reproduce bundle
-python evaluate.py --experiment experiments.corpus_replay       # retrieval floor: AUC ~0.51
-python evaluate.py --experiment experiments.zimt_magcorr        # historical best continuous model: AUC ~0.864
 ```
 
-To verify the headline 0.504 directly from the downloaded bundle (CPU, about two minutes), see [Reproduce the current results](#reproduce-the-current-results).
+1. **Install the project.** The three commands above clone the repository, move into it, and install its Python dependencies.
+2. **Download the data.** `python setup_data.py` pulls the trained model checkpoints, the evaluation data, and a bundle of cached results, all from the GitHub release, into `./data` and a couple of expected root locations. Nothing here requires a GPU.
+3. **Check the headline number.** `python verify_headline.py` replays the cached, already-selected trajectories for three seeds through the same evaluator used throughout the project and confirms each one matches the published score. It runs on CPU in about two minutes and never touches the model itself.
+4. **Generate trajectories.** The command below samples fresh trajectories from the trained model and prints the detector's AUC against held-out human data. On its own the model lands around 0.65; the selection step that closes the rest of the gap is a separate offline process, described under Reproduce below.
 
-Note: verifying the headline runs on CPU; no GPU or CUDA setup is needed. For GPU-accelerated generation, install PyTorch with CUDA support first (see [pytorch.org](https://pytorch.org/get-started/locally/)).
+   ```bash
+   EVENT_CKPT=event_polar_4m_fc_v2.pt EVENT_ORDER=gumbel EVENT_CHOICE_TEMP=10 \
+   EVENT_SNAP=2.5 EVENT_DUR_STD=1.0 DUR_EMPIRICAL=1 \
+   python evaluate.py --experiment experiments.event_stream_polar --no-raw-nn
+   ```
 
-### Hardware
+Everything above runs on CPU. Generating new trajectories from the checkpoint (step 4) is faster with a GPU; see [pytorch.org](https://pytorch.org/get-started/locally/) for a CUDA-enabled install if you have one.
 
-Developed on an RTX 4070 (12GB VRAM). A single consumer GPU is sufficient for all experiments. CPU-only inference works for corpus replay and corpus rotate.
+## Results
+
+The short version: a 6-million-parameter model, paired with a step that selects which of its own outputs to keep, gets a dedicated detector down from spotting synthetic movement almost every time to nearly a coin flip, and that holds up on data the tuning process never saw.
+
+Here is what changed over the project. The first row is a reference point (copying real trajectories), not a generative result:
+
+| Approach | AUC | What it means |
+|---|---|---|
+| Corpus replay (real trajectories, translated to match endpoints) | 0.51 | Retrieval floor, not a generative result |
+| Best continuous model (diffusion, flow matching, and similar) | 0.86 | Ceiling that every non-discrete architecture hit |
+| Event-stream model alone, no selection | 0.652 | A single generative model, no access to recorded trajectories at inference time |
+| + per-item selection | 0.568 | Choosing one candidate per movement from several generated options |
+| + set-level selection (tuning headline) | 0.504 | Choosing a whole population of candidates at once against three tuning seeds |
+| + set-level selection, six fresh seeds | 0.513 | Same recipe, no retuning, on seeds never seen during development |
+
+The number to actually trust is the second-to-last row paired with the last one. Three seeds (42, 43, 44) were used while building and tuning the selection recipe, and on those three it averages 0.504. Six more seeds (45 through 50) then ran the identical, frozen recipe with no further tuning, and those average 0.513, with a 95 percent confidence interval of [0.506, 0.520]. That interval sits just above chance rather than on it, so the summary this project uses is: fresh out-of-sample tests average 0.513, near chance, across three detector families (Random Forest, gradient-boosted trees, and a raw-signal neural network), with a worst case around 0.53.
+
+That worst case matters for a reason worth spelling out. The selection process was tuned against the Random Forest detector, so a skeptic is right to ask whether it just learned to fool that one model rather than to move closer to human. The strongest check against that is the raw-signal neural network, which never took part in tuning at all: it reads 0.508 on the same six seeds, in line with the Random Forest number rather than exposing daylight underneath it. A gradient-boosted-tree detector, also uninvolved in tuning, reads a bit higher at 0.523 (worst single seed 0.536), which is the number a skeptic would reach for first, and it is disclosed here rather than left for someone else to find.
+
+None of this should be read as "undetectable." It means near chance against the detectors this project actually built and tested, on the data distribution the model was trained on. Two external datasets (AdSERP and M4D, neither used in training) separate from the synthetics at 0.92 to 0.95, which sounds damning until you notice that those same external sets separate from this project's own internal humans by almost exactly the same margin. The two datasets were captured with different hardware and software than the training data, and that instrumentation gap shows up as separability whether the trajectories are real or synthetic. Read plainly, the synthetics sit exactly where the internal humans sit relative to any outside dataset tried so far. It is a tie, not a clean pass, and the project has no data yet that separates "different population" from "not human enough" for certain.
+
+![AUC by architecture family](figures/auc_progression.png)
+
+![Feature distribution comparison](figures/feature_distributions.png)
+
+## How it works
+
+Real mouse movement is not purely continuous. At 125 Hz sampling, 6.14 percent of all recorded samples are exact zero-displacement stalls: the cursor sits perfectly still for a frame or more before moving again, usually right at a direction change or a deceleration. Those stalls carry essentially all of the curvature signal a detector can key on.
+
+Every continuous generative approach this project tried, diffusion, flow matching, recurrent networks, can get arbitrarily close to zero displacement but cannot produce an exact zero, and each one plateaued somewhere between 0.86 and 1.0 AUC as a result. The fix was to stop treating position as continuous. Each trajectory is instead encoded as a stream of discrete events (a speed bin, a heading-change bin, and a gap in time), with the stall represented directly as its own zero-speed token rather than approximated by a small nonzero one. A masked-token model in the MaskGIT and SoundStorm style, the same family used for parallel audio and image generation, is trained on 4.16 million of these event streams and gets most of the way there on its own.
+
+Two other things mattered almost as much as the architecture. Positions have to snap to the integer pixel grid the recording hardware actually writes to; leaving slow movement off that grid alone cost about 0.05 AUC. And once the model's own kinematics were good enough, the remaining gap turned out to be a selection problem rather than a generation problem: given several candidate paths for the same start and end point, an adversarial judge that scores the whole chosen set at once, rather than one candidate in isolation, closes most of what selecting one-at-a-time leaves behind.
+
+![Generated trajectories](figures/trajectory_overlay.png)
+
+A reinforcement-learning pilot, run July 10 and 11, tried folding that judge's signal directly into the model's weights using GRPO instead of a separate selection step. It moved the base model's own score from about 0.66 to a plateau around 0.638 and stopped improving there. More decisively, pools generated by the RL model made the full selection pipeline worse, not better, on all three tuning seeds (0.518 against the 0.504 baseline): RL training narrows how varied the model's candidates are, and the whole value of set-level selection comes from having a diverse pool to choose from. The direction is parked, not ruled out. Details and the full go/no-go analysis are in [RL_PILOT.md](RL_PILOT.md) and the July 10-11 entries of [EXPERIMENTS.md](EXPERIMENTS.md).
+
+For the complete account, including why every continuous architecture family failed and the full derivation of the selection method, see [METHODOLOGY.md](METHODOLOGY.md).
 
 ## Reproduce the current results
 
-**Verify the headline in minutes, no GPU.** `setup_data.py` downloads the cached candidate pools and the winning picks for all three seeds. Replaying them through the evaluator reproduces the confirmed numbers (0.5095 / 0.5030 / 0.4993, mean 0.504; exact on the original platform, within 0.001 across OS and BLAS differences) without loading the model:
+**Verify the headline in minutes, no GPU.** `setup_data.py` downloads the cached candidate pools and the winning picks for all three tuning seeds. Replaying them through the evaluator reproduces the confirmed numbers (0.5095 / 0.5030 / 0.4993, mean 0.504; exact on the original platform, within 0.001 across OS and BLAS differences) without loading the model:
 
 ```bash
 EVENT_POOL_LOAD=pool_s42_k16.npz \
@@ -137,7 +86,7 @@ python evaluate.py --experiment experiments.event_stream_polar --seed 42 --no-ra
 
 Repeat with `s43`/`--seed 43` and `s44`/`--seed 44` for the other two seeds, or run `python verify_headline.py` to do all three and check them against the published values in one command. The same check runs in CI on every push (the verify badge at the top of this page). The human class in this replay is the held-out evaluation sample no part of selection ever saw; the pool files contain only model-generated trajectories, so nothing here can leak the answer. Drop `--no-raw-nn` to also run the raw-sequence neural detector (slower; needs the training data split).
 
-**Rebuild everything from scratch.** All of the current-generation numbers come from one checkpoint, `event_polar_4m_fc_v2.pt` (downloaded to `training/` by `setup_data.py`), run through `experiments/event_stream_polar.py` with different environment variables controlling the sampler and the selection layer. The exact locked recipe (and every knob that was tried and rejected along the way) is logged in [EXPERIMENTS.md](EXPERIMENTS.md); the commands below are the short version.
+**Rebuild everything from scratch.** All of the current-generation numbers come from one checkpoint, `event_polar_4m_fc_v2.pt` (downloaded to `training/` by `setup_data.py`), run through `experiments/event_stream_polar.py` with different environment variables controlling the sampler and the selection layer. The exact locked recipe, and every knob that was tried and rejected along the way, is logged in [EXPERIMENTS.md](EXPERIMENTS.md); the commands below are the short version.
 
 **Pure model, no selection (AUC ~0.652):**
 
@@ -146,38 +95,35 @@ python evaluate.py --experiment experiments.event_stream_polar
 ```
 with environment variables `EVENT_CKPT=event_polar_4m_fc_v2.pt EVENT_ORDER=gumbel EVENT_CHOICE_TEMP=10 EVENT_SNAP=2.5 EVENT_DUR_STD=1.0 DUR_EMPIRICAL=1`.
 
-**+ SIR selection, the honest multi-seed best (AUC ~0.568):** add `EVENT_SIR=16 EVENT_SIR_TEMP=0.7 EVENT_SIR_DUR_DIVERSE=1` to the same command. This draws 16 candidate trajectories per movement and keeps one via a tempered lottery on a GBM judge's log-odds, the judge fit against a human reference set disjoint from the evaluation sample.
+**+ SIR selection, the multi-seed-confirmed best with per-item selection (AUC ~0.568):** add `EVENT_SIR=16 EVENT_SIR_TEMP=0.7 EVENT_SIR_DUR_DIVERSE=1` to the same command. This draws 16 candidate trajectories per movement and keeps one via a tempered lottery on a GBM judge's log-odds, the judge fit against a human reference set disjoint from the evaluation sample.
 
 **+ set-level reselection, the headline result (AUC ~0.504, three-seed confirmed):** this one is a two-step, mostly-offline process rather than a single command.
 
-1. Cache every candidate from the SIR pool instead of committing to one (`run_poolgen.sh` does this for a list of seeds, using `EVENT_POOL_SAVE` on top of the SIR recipe above).
-2. Run `trust33.py --pool pool_s<seed>_k16.npz` to walk the set-level reselection offline against the cached pool. It fits a 33-feature RF judge (the 18 kinematic features plus 15 raw-signal summaries) between a human reference half and the currently selected set, moves only the top fraction of picks toward the judge's preference each round with a decaying step size, and repeats for about 30 rounds. The script reports a proxy AUC on a held-out reference half; the final, reported number replays the winning selection through `evaluate.py` itself (via `EVENT_POOL_LOAD` / `EVENT_POOL_PICKS`), where the human class is the untouched evaluation sample no part of selection has seen. `verify_b.sh` runs this for seeds 42/43/44 with the full detector suite.
+1. Cache every candidate from the SIR pool instead of committing to one (`scripts/run_poolgen.sh` does this for a list of seeds, using `EVENT_POOL_SAVE` on top of the SIR recipe above).
+2. Run `trust33.py --pool pool_s<seed>_k16.npz` to walk the set-level reselection offline against the cached pool. It fits a 33-feature RF judge (the 18 kinematic features plus 15 raw-signal summaries) between a human reference half and the currently selected set, moves only the top fraction of picks toward the judge's preference each round with a decaying step size, and repeats for about 30 rounds. The script reports a proxy AUC on a held-out reference half; the final, reported number replays the winning selection through `evaluate.py` itself (via `EVENT_POOL_LOAD` / `EVENT_POOL_PICKS`), where the human class is the untouched evaluation sample no part of selection has seen. `scripts/verify_b.sh` runs this for seeds 42/43/44 with the full detector suite.
 
-## Architecture: event-stream polar model
+### Hardware
 
-The current model represents each trajectory as a sequence of events rather than a sequence of (x, y) coordinates. Each event carries a speed bin, a heading-increment bin (relative to the previous heading), and an inter-event time, and stalls are represented directly as a zero-speed bin rather than being approximated by a near-zero continuous value.
+Developed on an RTX 4070 (12GB VRAM). A single consumer GPU is sufficient for all experiments. CPU-only inference works for corpus replay, corpus rotate, and verifying the headline.
 
-The backbone is a 6M-parameter masked bidirectional Transformer in the MaskGIT and SoundStorm style. Every event starts masked and gets revealed one group at a time in confidence order, so each generation step sees the full sequence in both directions rather than only the past.
-
-Timing comes from a small flow-matching head instead of a fixed clock. That is what reproduces the raw, non-uniform polling intervals of real mouse hardware, where samples do not land on an even grid.
-
-The model also takes a movement-character vector: the same 18 kinematic features the evaluator uses, fed in as a conditioning slot the model was fine-tuned to follow. At generation time we draw that vector from a kernel density estimate over a bank of real feature vectors, matched to the requested movement distance, so no single real trajectory is ever copied.
-
-Two decode rules run after the continuous heading and speed are integrated into a path. Positions round to the integer pixel grid the recording hardware actually writes to. Slow steps, meaning speed below 2.5 px per frame, snap to whole lattice steps instead of sitting off-grid. Off-lattice positions during genuinely slow movement are something real mouse hardware cannot produce, and they turned out to be the single largest artifact in the project, worth about 0.05 AUC on otherwise real data.
-
-Trained on 4.16 million trajectories from five public mouse-dynamics datasets. Checkpoint: `event_polar_4m_fc_v2.pt`.
-
-See [METHODOLOGY.md](METHODOLOGY.md) for the full account of how this architecture was arrived at, including why the earlier VQ-VAE and continuous-diffusion approaches hit hard ceilings, and for the selection-as-a-set-level-problem result.
-
-## Repository Structure
+## Repository structure
 
 ```
 mouse-trajectory-synthesis/
 ├── evaluate.py                       # Adversarial evaluator (RF OOB AUC, GBM CV, raw-NN)
 ├── features.py                       # 18 kinematic feature extractors
+├── event_codec.py                    # Event-stream encode/decode
+├── external_detectors.py             # GBM, extra-trees, MLP, logistic, histogram-GBM detectors
+├── detector_raw.py                   # Raw-signal (non-summary-feature) detectors
 ├── selection_lab.py                  # Offline set-level selection over a cached candidate pool
-├── run_poolgen.sh                    # Generates and caches SIR candidate pools per seed
-├── generate_figures.py               # Regenerate README figures
+├── trust33.py                        # 33-feature judge, set-level reselection loop (the 0.504/0.513 recipe)
+├── tune_trust.py                     # Selection-recipe search
+├── regenerate_human_features.py      # Rebuild the human reference feature cache
+├── setup_data.py                     # Downloads checkpoints, eval data, and the reproduce bundle
+├── verify_headline.py                # One-command check of the 0.504 headline against published values
+├── generate_figures.py               # Regenerate the figures embedded in this page
+├── test_*.py                         # Unit tests
+├── scripts/                          # Shell runners: pool generation, overnight sweeps, verify_b.sh, run_oos.sh
 ├── experiments/
 │   ├── corpus_replay.py              # kNN corpus replay (AUC 0.51)
 │   ├── corpus_rotate.py              # Rotation + scale replay (AUC 0.686)
@@ -194,15 +140,15 @@ mouse-trajectory-synthesis/
 │   ├── temporal_unet.py              # 1D U-Net for diffusion / flow matching (historical)
 │   ├── vqvae.py                      # Vector-quantized variational autoencoder (historical)
 │   └── trajectory_transformer.py
-├── training/                         # Training scripts
-│   ├── train_events_polar.py         # Event-stream pretraining
-│   ├── train_events_polar_featcond.py# Movement-character conditioning fine-tune
-│   ├── train_events_polar_dpo.py     # Preference-learning fine-tune (did not transfer; see METHODOLOGY.md)
-│   ├── train_zimt.py                 # ZIMT training, historical (3-phase curriculum)
-│   └── ...
-├── autoresearch/                     # Original research code (v1-v147)
+├── training/                         # Training scripts, including the RL trainer (train_events_polar_grpo.py)
+├── notebooks/                        # Exploratory notebooks
+├── figures/                          # README figures and the script that regenerates them
+├── data/                             # Downloaded checkpoints and evaluation data (gitignored)
+├── external_validation/              # AdSERP and M4D cross-checks, out-of-sample seed statistics
+├── research/                         # Archived one-off scripts: autoresearch waves, diagnostics, sweeps (see research/README.md)
 ├── METHODOLOGY.md                    # Evaluation framework and research findings
 ├── EXPERIMENTS.md                    # Full log of 200+ experiments
+├── RL_PILOT.md                       # Design doc for the parked GRPO reinforcement-learning pilot
 ├── CITATION.cff                      # How to cite this work
 └── LICENSE                           # Apache-2.0
 ```
@@ -221,6 +167,8 @@ All trajectory data comes from public mouse dynamics datasets. Raw data is **not
 
 Model weights are trained on these publicly available datasets (4.16M total trajectories). Raw trajectory data is not included in this repository.
 
+Two further datasets, AdSERP and M4D, were located later in the project and used only as an external validation check (never for training); see Results above and `external_validation/` for the full comparison.
+
 Dataset credits, as their authors request them:
 
 - Fülöp, Á., Kovács, L., Kurics, T., Windhager-Pokol, E. (2016). Balabit Mouse Dynamics Challenge data set.
@@ -229,7 +177,15 @@ Dataset credits, as their authors request them:
 - Shen, C. (2017). Mouse behavior data for continuous authentication. figshare, CC BY 4.0.
 - Yıldırım, M., Kılıç, A. A., Anarım, E. (2021). Boğaziçi University mouse dynamics dataset. Mendeley Data, v2, CC BY 4.0.
 
-## Related Work
+## Open directions
+
+The result lives entirely at inference time, in the selection step, not in the model's weights. Every attempt to fold the selection judgment into the model directly failed: plain imitation, anchored imitation, three adversarial fine-tunes, and a GRPO reinforcement-learning pilot (parked July 11, see How it works above and [RL_PILOT.md](RL_PILOT.md)) all left the frozen model plus a separate selection step as the only approach that actually works. Three directions remain open:
+
+- **Reinforcement learning, retried differently.** The GRPO pilot plateaued around 0.638 and lost to the base model once its pools went through the full selection pipeline, because RL narrowed the model's candidate diversity and selection depends on that diversity. A reward built from a panel of several detector families at once, or using an RL-trained model purely as a stronger starting point for selection rather than a replacement for it, are both untried.
+- **A different backbone.** The masked-token design fixed the exact-stall problem but may be exactly what resists absorbing the judge's signal. An architecture with exact zeros and a continuous movement latent might generate closer to human before any selection is applied.
+- **Cleaner external data.** AdSERP and M4D gave the first outside check this project has had, but the instrumentation gap between datasets is as large as the gap between synthetic and human, so it doesn't yet resolve the question on its own. What is missing is external data collected on matching hardware and software, or a way to separate that instrumentation shift from actual generator error. See [METHODOLOGY.md](METHODOLOGY.md) section 7.11 for the full write-up.
+
+## Related work
 
 - **Plamondon (1995)**: Kinematic theory of rapid human movements. The sigma-lognormal model decomposes movements into neuromuscular primitives.
 - **Fitts (1954)**: Movement time as a function of distance and target width. The foundational speed-accuracy tradeoff.
@@ -238,7 +194,7 @@ Dataset credits, as their authors request them:
 - **T2M-GPT** (Zhang et al., 2023): Discrete tokens for human body motion generation. An early architectural analogue explored in this project's VQ-VAE experiments.
 - **CANDI** (2025): Hybrid discrete-continuous diffusion. Explored as an intermediate step before the fully discrete event-stream approach.
 
-See [METHODOLOGY.md](METHODOLOGY.md) for detailed discussion. See [EXPERIMENTS.md](EXPERIMENTS.md) for the full log of 200+ experiments.
+See [METHODOLOGY.md](METHODOLOGY.md) for detailed discussion and [EXPERIMENTS.md](EXPERIMENTS.md) for the full log of 200+ experiments.
 
 ## Citing this work
 
